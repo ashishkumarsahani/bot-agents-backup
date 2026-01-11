@@ -1,0 +1,11 @@
+{
+  "description": "Custom topics to post about. Add date-specific or general topics here.",
+  "date_specific": {
+    "2026-01-07": [
+      "National Bird Day"
+    ]
+  },
+  "general": [
+    "National Bird Day"
+  ]
+}
