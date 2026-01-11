@@ -12,16 +12,10 @@ __pycache__/
 
 # Credentials - DO NOT COMMIT
 firebase_credentials.json
-bot_accounts.json
 
 # Database files
 *.sqlite3
 chroma_db/
 
-# State files
-rotation_state.json
-quote_rotation_state.json
-
 # Lock files
 .lock
-uv.lock
