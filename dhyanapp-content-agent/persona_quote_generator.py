@@ -92,7 +92,7 @@ QUOTE_FONTS = {
             'quote': str(FONTS_DIR / 'Cinzel-Bold.ttf'),
             'attribution': '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
             'style': 'classical Roman',
-            'size_adjust': 0.9
+            'size_adjust': 0.95
         },
         {
             'name': 'Great Vibes',
@@ -106,7 +106,7 @@ QUOTE_FONTS = {
             'quote': str(FONTS_DIR / 'PlayfairDisplay-Bold.ttf'),
             'attribution': '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
             'style': 'sophisticated serif',
-            'size_adjust': 0.95
+            'size_adjust': 1.0
         },
         {
             'name': 'Cormorant Garamond',
@@ -121,6 +121,41 @@ QUOTE_FONTS = {
             'attribution': '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
             'style': 'thoughtful modern',
             'size_adjust': 0.95
+        },
+        {
+            'name': 'Lora',
+            'quote': str(FONTS_DIR / 'Lora-Bold.ttf'),
+            'attribution': '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+            'style': 'contemporary serif',
+            'size_adjust': 1.0
+        },
+        {
+            'name': 'Merriweather',
+            'quote': str(FONTS_DIR / 'Merriweather-Bold.ttf'),
+            'attribution': '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+            'style': 'readable serif',
+            'size_adjust': 0.95
+        },
+        {
+            'name': 'Spectral',
+            'quote': str(FONTS_DIR / 'Spectral-Bold.ttf'),
+            'attribution': '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+            'style': 'modern editorial',
+            'size_adjust': 1.0
+        },
+        {
+            'name': 'Libre Baskerville',
+            'quote': str(FONTS_DIR / 'LibreBaskerville-Bold.ttf'),
+            'attribution': '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+            'style': 'classic British',
+            'size_adjust': 0.95
+        },
+        {
+            'name': 'Dancing Script',
+            'quote': str(FONTS_DIR / 'DancingScript-Bold.ttf'),
+            'attribution': '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+            'style': 'casual script',
+            'size_adjust': 1.15
         },
         {
             'name': 'Noto Serif Display',
@@ -604,16 +639,52 @@ IMPORTANT: Do NOT include any text, letters, words, or typography."""
             'size_adjust': 1.0
         }
 
-    def _get_font(self, font_path: str, size: int) -> ImageFont.FreeTypeFont:
-        """Load font from path with fallback."""
+    def _get_font(self, font_path: str, size: int, language: str = 'english') -> ImageFont.FreeTypeFont:
+        """Load font from path with intelligent fallback to other available fonts."""
+        # Try the requested font first
         if font_path and os.path.exists(font_path):
             try:
                 return ImageFont.truetype(font_path, size)
             except Exception as e:
                 logger.warning(f"Failed to load font {font_path}: {e}")
 
-        # Fallback to default
-        logger.warning(f"Using default font")
+        # Try language-specific fallback font
+        fallback_path = FONT_FALLBACK.get(language, FONT_FALLBACK['english'])
+        if fallback_path and os.path.exists(fallback_path):
+            try:
+                logger.info(f"Using fallback font: {fallback_path}")
+                return ImageFont.truetype(fallback_path, size)
+            except Exception as e:
+                logger.warning(f"Failed to load fallback font {fallback_path}: {e}")
+
+        # Try other available fonts from the QUOTE_FONTS config
+        fonts_to_try = QUOTE_FONTS.get(language, QUOTE_FONTS['english'])
+        for font_config in fonts_to_try:
+            alt_font_path = font_config.get('quote', '')
+            if alt_font_path and os.path.exists(alt_font_path) and alt_font_path != font_path:
+                try:
+                    logger.info(f"Using alternative font: {font_config['name']}")
+                    return ImageFont.truetype(alt_font_path, size)
+                except Exception:
+                    continue
+
+        # Try system fonts as last resort
+        system_fonts = [
+            '/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf',
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+            '/usr/share/fonts/truetype/noto/NotoSerif-Bold.ttf',
+            '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf',
+        ]
+        for sys_font in system_fonts:
+            if os.path.exists(sys_font):
+                try:
+                    logger.info(f"Using system font: {sys_font}")
+                    return ImageFont.truetype(sys_font, size)
+                except Exception:
+                    continue
+
+        # Absolute last resort - default font (should rarely reach here)
+        logger.warning("All font fallbacks failed, using PIL default font")
         return ImageFont.load_default()
 
     def _wrap_text(self, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
@@ -672,8 +743,8 @@ IMPORTANT: Do NOT include any text, letters, words, or typography."""
         quote_font_size = int(base_quote_size * size_adjust)
         attr_font_size = 28
 
-        quote_font = self._get_font(font_config['quote'], quote_font_size)
-        attr_font = self._get_font(font_config['attribution'], attr_font_size)
+        quote_font = self._get_font(font_config['quote'], quote_font_size, language)
+        attr_font = self._get_font(font_config['attribution'], attr_font_size, language)
 
         # Wrap quote text
         max_text_width = width - (padding * 3)

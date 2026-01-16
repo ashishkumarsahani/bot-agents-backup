@@ -121,20 +121,19 @@ class EngagementService:
 
         Returns:
             True if successful
+
+        Note: likeCount is incremented automatically by Cloud Function (handleLikeCreated)
         """
         try:
             timestamp = int(datetime.now(IST).timestamp() * 1000)
 
             # Add to Likes subcollection
+            # Cloud Function handleLikeCreated will increment likeCount automatically
             like_ref = self.db.collection('posts').document(post_id).collection('Likes').document(user_id)
             like_ref.set({
                 'userId': user_id,
                 'timestamp': timestamp
             })
-
-            # Increment likeCount on post
-            post_ref = self.db.collection('posts').document(post_id)
-            post_ref.update({'likeCount': firestore.Increment(1)})
 
             logger.info(f"[SUCCESS] Like added by {user_id}")
             return True
@@ -154,12 +153,15 @@ class EngagementService:
 
         Returns:
             Comment ID if successful
+
+        Note: commentCount is incremented automatically by Cloud Function (handleCommentCreated)
         """
         try:
             timestamp = int(datetime.now(IST).timestamp() * 1000)
             comment_id = f"{timestamp}{user_id}"
 
             # Add to Comments subcollection
+            # Cloud Function handleCommentCreated will increment commentCount automatically
             comment_ref = self.db.collection('posts').document(post_id).collection('Comments').document(comment_id)
             comment_ref.set({
                 'commentId': comment_id,
@@ -168,10 +170,6 @@ class EngagementService:
                 'createdAt': timestamp,
                 'repliedTo': reply_to
             })
-
-            # Increment commentCount on post
-            post_ref = self.db.collection('posts').document(post_id)
-            post_ref.update({'commentCount': firestore.Increment(1)})
 
             logger.info(f"[SUCCESS] Comment added by {user_id}: {comment_text[:50]}...")
             return comment_id
