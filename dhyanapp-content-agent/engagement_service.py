@@ -199,14 +199,8 @@ class EngagementService:
         Returns:
             Generated anecdote text (40-80 words)
         """
-        # Determine comment language
-        account_languages = account.get('languages', ['english'])
-        if account_languages == ['hindi']:
-            comment_lang = "Hindi"
-        elif post_language == 'hindi' and 'hindi' in account_languages:
-            comment_lang = "Hindi" if random.random() < 0.7 else "English"
-        else:
-            comment_lang = "English"
+        # Always match the post language
+        comment_lang = "Hindi" if post_language == 'hindi' else "English"
 
         # Build people to tag
         people_to_tag = []
@@ -223,7 +217,7 @@ class EngagementService:
             selected_tag = random.choice(people_to_tag)
             tag_instruction = f"\nYou may tag @{selected_tag} when sharing your story."
 
-        prompt = f"""Post Topic (summarized):
+        prompt = f"""Post content (respond to THIS):
 {post_content[:300]}
 
 You are: {account.get('name')}
@@ -232,28 +226,22 @@ Saints/Teachers you follow: {', '.join(account.get('follows', [])[:4])}
 Scriptures: {', '.join(account.get('scriptures', [])[:3])}
 {tag_instruction}
 
-Share a SHORT anecdote or story (40-80 words) from YOUR tradition that RELATES to the post topic.
+Share a SHORT anecdote or story (40-80 words) from YOUR tradition that CONNECTS to what was shared in the post.
 
 Guidelines:
-- Pick ONE specific story from your tradition's saints, scriptures, or teachings
-- It should connect meaningfully to the post's theme
-- Tell it naturally, like you're sharing with friends
-- End with a brief reflection or "This reminds me..." style connection
+- Read the post carefully — your story must relate to its specific content
+- Pick ONE real story from your tradition's saints, scriptures, or teachings
+- Tell it naturally, like sharing with a close spiritual friend
+- End with a warm reflection or "This reminds me..." connection
 - Write in {comment_lang}
-
-Story ideas based on YOUR tradition:
-- If you follow Kabir: a story about his encounters with ritualism or ego
-- If you follow Ramakrishna: his parables or meetings with seekers
-- If you follow Ramana: stories of devotees at Arunachala
-- If you follow Krishna: a scene from the Mahabharata or Bhagavatam
-- If you follow Tantra: a Shakti story or tantric parable
-- If you're a storyteller (Vidur): an epic moment from Mahabharata/Ramayana
+- Sound like a seeker sharing from personal experience, not a teacher giving a lesson
 
 DO NOT:
-- Make up fake stories - use real incidents from your tradition
+- Make up fake stories — use real incidents from your tradition
 - Be preachy or lecture-like
 - Write more than 80 words
-- Be generic - be specific to YOUR tradition
+- Ignore the post content — your story must connect to it
+- Be generic — be specific to YOUR tradition
 
 Return ONLY the anecdote text."""
 
@@ -276,9 +264,9 @@ Return ONLY the anecdote text."""
 
     def generate_comment(self, account: dict, post_content: str, post_language: str,
                          existing_comments: List[dict] = None, reply_to_comment: dict = None,
-                         poster_name: str = None) -> str:
+                         poster_name: str = None, next_commenter_name: str = None) -> str:
         """
-        Generate a casual comment based on the account's persona.
+        Generate a natural, thoughtful comment based on the account's persona.
 
         Args:
             account: Account dictionary with persona details
@@ -287,18 +275,13 @@ Return ONLY the anecdote text."""
             existing_comments: List of existing comments for context
             reply_to_comment: Specific comment being replied to
             poster_name: Name of the original poster
+            next_commenter_name: Name of the next bot to comment (to tag)
 
         Returns:
             Generated comment text
         """
-        # Determine comment language
-        account_languages = account.get('languages', ['english'])
-        if account_languages == ['hindi']:
-            comment_lang = "Hindi"
-        elif post_language == 'hindi' and 'hindi' in account_languages:
-            comment_lang = "Hindi" if random.random() < 0.7 else "English"
-        else:
-            comment_lang = "English"
+        # Always match the post language
+        comment_lang = "Hindi" if post_language == 'hindi' else "English"
 
         # Build list of people to potentially tag
         people_to_tag = []
@@ -353,28 +336,36 @@ You're first to comment! {f"Tag @{poster_name} if you want." if poster_name else
 Drop a friendly, genuine reaction to the post.
 """
 
+        # Build tagging requirements
+        tag_requirements = ""
+        if poster_name:
+            tag_requirements += f"\n- You MUST address the post creator as @{poster_name} ji in your comment"
+        if next_commenter_name:
+            tag_requirements += f"\n- You MUST also tag @{next_commenter_name} ji in your comment to bring them into the conversation"
+
         prompt = f"""{context}
 
-Write a comment in {comment_lang} that reflects YOUR tradition and philosophy:
-- 15-40 words - thoughtful but not an essay
-- Draw from YOUR scriptures, saints, or teachings naturally
-- Tag people when it fits the conversation (like "@Vidur ji" or "@Yogini")
-- Sound like a real person sharing wisdom, not a bot
-- Can reference relevant shlokas, dohas, or teachings briefly
-- Warm and engaging but with substance
+Write a comment in {comment_lang} as a fellow spiritual seeker and mentor:
+- 15-40 words — thoughtful, warm, and genuine
+- The post text is your PRIMARY context — respond to what was actually written{tag_requirements}
+- Share from your own spiritual journey and tradition naturally
+- You are a seeker on the same path, sometimes a gentle mentor — never a lecturer
+- Reference your scriptures, saints, or teachings only when it flows naturally
+- Sound like someone others would seek out for spiritual friendship
 
 Your unique voice:
-- If you follow Kabir, you might quote a doha
-- If you follow Ramana, you might ask "Who is experiencing this?"
-- If you follow Krishna bhakti, you might say "Jai Shri Krishna" naturally
-- If you're into Tantra, reference Shakti or consciousness
-- If you're a storyteller, connect to an epic moment
+- If you follow Kabir, you might share a doha that moved you
+- If you follow Ramana, you might gently point to self-inquiry
+- If you follow Krishna bhakti, express devotion naturally
+- If you're into Tantra, speak of Shakti or consciousness from experience
+- If you're a storyteller, weave in a moment from the epics
 
 AVOID:
-- Excessive casual words like "yaar", "wow" in every comment
-- Generic responses without your tradition's flavor
-- Being preachy or lecturing others
-- Overly formal academic language
+- Generic praise ("beautiful post!", "so true!")
+- Being preachy or talking down to others
+- Excessive casual words like "yaar", "wow"
+- Overly formal or academic language
+- Ignoring what the post actually says
 
 Return ONLY the comment text."""
 
@@ -382,11 +373,11 @@ Return ONLY the comment text."""
             response = self.client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": f"You are {account['name']}, commenting on a spiritual post in your unique voice."},
+                    {"role": "system", "content": f"You are {account['name']}, a genuine spiritual seeker and mentor. You comment naturally, sharing insights from your own journey."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.85,
-                max_tokens=100
+                max_tokens=200
             )
             comment = response.choices[0].message.content.strip()
             comment = comment.strip('"\'')
@@ -471,8 +462,13 @@ Return ONLY the comment text."""
 
         stats["anecdotes"] = 0
 
-        for account in engaging_accounts:
+        for idx, account in enumerate(engaging_accounts):
             existing = self.get_existing_comments(post_id)
+
+            # Determine the next commenter to tag
+            next_commenter_name = None
+            if idx + 1 < len(engaging_accounts):
+                next_commenter_name = engaging_accounts[idx + 1].get('name')
 
             # Check if this account should share an anecdote
             if account['user_id'] in anecdote_commenter_ids:
@@ -487,13 +483,15 @@ Return ONLY the comment text."""
                     # Fallback to regular comment if anecdote generation fails
                     comment = self.generate_comment(
                         account, post_content, post_language,
-                        existing, poster_name=poster_name
+                        existing, poster_name=poster_name,
+                        next_commenter_name=next_commenter_name
                     )
                     comment_type = "comment"
             else:
                 comment = self.generate_comment(
                     account, post_content, post_language,
-                    existing, poster_name=poster_name
+                    existing, poster_name=poster_name,
+                    next_commenter_name=next_commenter_name
                 )
                 comment_type = "comment"
 

@@ -271,7 +271,8 @@ class UserPostEngagementService:
     def generate_thoughtful_comment(self, account: dict, post_content: str,
                                      post_analysis: str, creator_name: str,
                                      existing_comments: List[dict] = None,
-                                     post_language: str = 'english') -> str:
+                                     post_language: str = 'english',
+                                     next_commenter_name: str = None) -> str:
         """
         Generate a thoughtful comment based on the account's persona.
 
@@ -286,15 +287,9 @@ class UserPostEngagementService:
         Returns:
             Generated comment text
         """
-        # Determine comment language
-        account_languages = account.get('languages', ['english'])
-        if account_languages == ['hindi']:
-            comment_lang = "Hindi"
-        elif 'hindi' in post_content.lower() or any(ord(c) > 0x0900 and ord(c) < 0x097F for c in post_content[:100]):
-            # Detect Hindi script
-            comment_lang = "Hindi" if 'hindi' in account_languages else "English"
-        else:
-            comment_lang = "English"
+        # Always match the post language — detect Hindi script in content
+        is_hindi = any(0x0900 <= ord(c) <= 0x097F for c in post_content[:200])
+        comment_lang = "Hindi" if (is_hindi or post_language == 'hindi') else "English"
 
         # Build existing comments context
         comments_context = ""
@@ -315,29 +310,33 @@ class UserPostEngagementService:
             tag_target = random.choice(people_to_tag)
             tag_suggestion = f"\nYou may naturally tag @{tag_target} if responding to their point."
 
-        prompt = f"""You are {account['name']} commenting on a user's post in a spiritual app.
+        prompt = f"""You are {account['name']}, a genuine spiritual seeker and mentor on Dhyanapp.
 
 Your persona: {account.get('persona', '')}
 Your style: {account.get('conversational_style', '')}
 Teachers you follow: {', '.join(account.get('follows', [])[:4])}
 
-Post by @{creator_name}:
+Post by @{creator_name} (this is your PRIMARY context — respond to what they wrote):
 "{post_content[:500]}"
 
-Post themes (for context): {post_analysis}
+Post themes (supplementary context): {post_analysis}
 {comments_context}
 Write a thoughtful, genuine comment (20-50 words) in {comment_lang}:
-- Be warm and appreciative of their sharing
-- Connect their post to wisdom from YOUR tradition/teachers
-- If there are existing comments, you may respond to or build upon them naturally
-- Sound like a real person, not a generic bot
-- Can include a brief quote or teaching from your tradition
-{tag_suggestion}
+- You MUST address the post creator as @{creator_name} ji in your comment{f" and tag @{next_commenter_name} ji to bring them into the conversation" if next_commenter_name else ""}
+- Respond to what @{creator_name} actually shared — not generic praise
+- Share insights from your own spiritual journey and tradition
+- Be warm and natural, like a fellow seeker on the same path
+- Sometimes be a gentle mentor, sometimes a curious fellow traveler
+- Reference your tradition's wisdom only when it flows naturally
+- If there are existing comments, build on the conversation
 
-Your unique voice:
-{account.get('comment_style', '')}
+Your voice: {account.get('comment_style', '')}
 
-IMPORTANT: Don't repeat what others have already said. Add something new to the conversation.
+AVOID:
+- Generic responses ("beautiful post!", "so true!", "amazing!")
+- Preaching or lecturing
+- Ignoring the actual content of the post
+- Repeating what others have already said
 
 Return ONLY the comment text."""
 
@@ -345,11 +344,11 @@ Return ONLY the comment text."""
             response = self.client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": f"You are {account['name']}, a sincere spiritual seeker commenting on a fellow practitioner's post."},
+                    {"role": "system", "content": f"You are {account['name']}, a genuine spiritual seeker and mentor. You engage naturally and thoughtfully, sharing from your own journey."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.85,
-                max_tokens=150
+                max_tokens=200
             )
             comment = response.choices[0].message.content.strip()
             comment = comment.strip('"\'')
@@ -438,18 +437,24 @@ Return ONLY the comment text."""
         commenting_accounts = random.sample(all_accounts, min(2, len(all_accounts)))
         logger.info(f"\nCommenters: {[a['name'] for a in commenting_accounts]}")
 
-        for account in commenting_accounts:
+        for idx, account in enumerate(commenting_accounts):
             # Fetch existing comments (including any just added by other bots)
             existing_comments = self.get_existing_comments(post_id)
             if existing_comments:
                 logger.info(f"  Found {len(existing_comments)} existing comments for context")
+
+            # Determine the next commenter to tag
+            next_commenter_name = None
+            if idx + 1 < len(commenting_accounts):
+                next_commenter_name = commenting_accounts[idx + 1].get('name')
 
             comment = self.generate_thoughtful_comment(
                 account,
                 post_content,
                 post_analysis,
                 creator_name,
-                existing_comments=existing_comments
+                existing_comments=existing_comments,
+                next_commenter_name=next_commenter_name
             )
 
             if self.add_comment(post_id, account['user_id'], comment):

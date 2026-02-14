@@ -170,7 +170,12 @@ python persona_quote_generator.py --account dhyani --run-now
 
 ### Location
 ```
-/home/admin/dhyanapp-services/cloud-functions/functions/botEngagement.js
+/home/admin/bot_agents/cloud-functions/
+├── index.js              # Main entry point
+├── botEngagement.js      # Bot engagement functions
+├── package.json          # Dependencies
+├── firebase.json         # Firebase config
+└── .firebaserc           # Project config
 ```
 
 ### Cloud Functions
@@ -212,20 +217,27 @@ onPostCreated triggers
 
 1. Receives task from Cloud Tasks queue
 2. Fetches post content and image
-3. Analyzes image using GPT-4 Vision (if present)
-4. Gets existing comments for context
-5. Generates persona-appropriate comment using GPT-4o-mini
-6. Adds comment to `posts/{postId}/Comments/{commentId}`
-7. `handleCommentCreated` function increments `commentCount`
+3. **Theme Check**: Analyzes if post is spiritual/religious themed
+4. **Skip if not spiritual**: Returns without commenting
+5. **GPT Web Search**: Performs up to 2 searches for relevant quotes/context
+6. Analyzes image using GPT-4 Vision (if present)
+7. Gets existing comments for context
+8. Generates persona-appropriate comment (text prioritized over image)
+9. Adds comment to `posts/{postId}/Comments/{commentId}`
+10. `handleCommentCreated` function increments `commentCount`
 
-### Comment Generation Prompt
+### Comment Generation Features
 
 The system generates comments that:
+- **Only comment on spiritual/religious content** (skips other posts)
+- Use **GPT web search** for relevant quotes and teachings
+- **Prioritize text content** over image when generating comments
 - Match the bot's persona and conversational style
 - Reference teachings from the bot's spiritual tradition
 - Are 10-40 words in length
 - Don't repeat what other commenters have said
 - Use Hindi or English based on bot's language settings
+- Are thought-provoking with researched context
 
 ---
 
@@ -275,7 +287,7 @@ Mirror of `bot_accounts.json` for cloud function access.
 Tracks rotation state for post/quote generation.
 
 ### `config/secrets`
-Stores API keys (OPENAI_API_KEY, SERPER_API_KEY, etc.)
+Stores API keys (OPENAI_API_KEY only - no longer needs SERPER_API_KEY for bot engagement)
 
 ---
 
@@ -287,9 +299,11 @@ Cron jobs are already configured. To verify:
 crontab -l
 ```
 
-### Cloud Functions
+### Cloud Functions (Bot Engagement)
 ```bash
-cd /home/admin/dhyanapp-services/cloud-functions
+cd /home/admin/bot_agents/cloud-functions
+npm run deploy:engagement
+# Or manually:
 firebase deploy --only functions:onPostCreated,functions:processComment,functions:processLike --project dhyanapp-90de4
 ```
 
@@ -371,10 +385,16 @@ print('Bot accounts synced to Firestore')
 4. Run manually to see errors: `./run_persona_quotes.sh`
 
 ### Engagement not working
-1. Check cloud function logs: `firebase functions:log --project dhyanapp-90de4 --only onPostCreated`
+1. Check cloud function logs:
+   ```bash
+   cd /home/admin/bot_agents/cloud-functions
+   npm run logs
+   # Or: firebase functions:log --project dhyanapp-90de4 --only onPostCreated
+   ```
 2. Verify Cloud Tasks queue exists in GCP Console
 3. Check `botConfig/accounts` document exists in Firestore
 4. Verify `config/secrets` has `OPENAI_API_KEY`
+5. If post is not spiritual themed, comment will be skipped (check logs for "not spiritual themed")
 
 ### Bot account issues
 1. Verify user IDs match in Firebase Auth
