@@ -19,4 +19,6 @@ dependencies = [
     "langchain-chroma>=0.1.0",
     "langchain-text-splitters>=0.2.0",
     "pillow>=12.1.0",
+    "pymongo>=4.16.0",
+    "boto3>=1.42.79",
 ]

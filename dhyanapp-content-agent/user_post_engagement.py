@@ -37,8 +37,9 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 IST = ZoneInfo("Asia/Kolkata")
-BOT_ACCOUNTS_FILE = Path(__file__).parent / "bot_accounts.json"
 STATE_FILE = Path(__file__).parent / "user_engagement_state.json"
+
+from bot_personas_store import get_all_personas
 
 FIREBASE_CREDENTIALS_PATH = os.getenv(
     "FIREBASE_CREDENTIALS_PATH",
@@ -75,11 +76,9 @@ class UserPostEngagementService:
             self.bucket = None
 
     def _load_accounts(self) -> dict:
-        """Load bot accounts from JSON file."""
+        """Load bot accounts from MongoDB."""
         try:
-            with open(BOT_ACCOUNTS_FILE, 'r') as f:
-                data = json.load(f)
-                return data.get('accounts', {})
+            return get_all_personas()
         except Exception as e:
             logger.error(f"[ERROR] Failed to load bot accounts: {e}")
             return {}

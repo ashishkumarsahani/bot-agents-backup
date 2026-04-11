@@ -8,7 +8,7 @@ This service handles:
 - Performing web search for content
 - Generating posts/quotes from search results
 - Creating image prompts and calling gpt-image endpoint
-- Posting to Firestore with persona-specific style
+- Posting to MongoDB with persona-specific style
 """
 
 import os
@@ -38,22 +38,31 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 IST = ZoneInfo("Asia/Kolkata")
-BOT_ACCOUNTS_FILE = Path(__file__).parent / "bot_accounts.json"
 ROTATION_STATE_FILE = Path(__file__).parent / "rotation_state.json"
+
+from bot_personas_store import get_all_personas
 
 # API Configuration
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "d85ad7c3297a1e315dd011b058b5d81c749fd07b")
 DHYANAPP_SERVICES_URL = "https://dhyanapp-services.epilepto.com"
 
-# Firebase for password
-import firebase_admin
-from firebase_admin import credentials, firestore, storage
+# MongoDB + MinIO
+from pymongo import MongoClient
+import boto3
+from botocore.client import Config as BotoConfig
 
-FIREBASE_CREDENTIALS_PATH = os.getenv(
-    "FIREBASE_CREDENTIALS_PATH",
-    os.path.join(os.path.dirname(__file__), "firebase_credentials.json")
-)
-FIREBASE_STORAGE_BUCKET = "dhyanapp-90de4.appspot.com"
+# MongoDB Configuration
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://dhyanadmin:Dhyan%40Mongo2026!@localhost:27017/dhyanapp?authSource=admin&replicaSet=rs0")
+
+# MinIO Configuration
+_minio_host = os.getenv("MINIO_ENDPOINT", "localhost")
+_minio_port = os.getenv("MINIO_PORT", "9000")
+MINIO_ENDPOINT = _minio_host if ":" in _minio_host else f"{_minio_host}:{_minio_port}"
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+MINIO_BUCKET = os.getenv("MINIO_BUCKET", "dhyanapp-recordings")
+MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
+MINIO_PUBLIC_URL = os.getenv("MINIO_PUBLIC_URL", "https://storage.dhyanapp.org")
 
 # Image Style Options for variety in post images
 IMAGE_STYLES = [
@@ -165,47 +174,64 @@ class PersonaPostGenerator:
 
     def __init__(self):
         """Initialize the persona post generator."""
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.accounts = self._load_accounts()
         self.rotation_state = self._load_rotation_state()
-        self._initialize_firebase()
-        self.services_password = self._get_services_password()
+        self._initialize_mongodb()
+        self._initialize_minio()
+        self._load_config_from_mongo()
+        self.client = OpenAI(api_key=self.openai_api_key)
+        self.services_password = self.secrets.get("SERVICES_PASSWORD", "")
 
-    def _initialize_firebase(self):
-        """Initialize Firebase."""
+    def _initialize_mongodb(self):
+        """Initialize MongoDB connection."""
         try:
-            if not firebase_admin._apps:
-                if os.path.exists(FIREBASE_CREDENTIALS_PATH):
-                    cred = credentials.Certificate(FIREBASE_CREDENTIALS_PATH)
-                    firebase_admin.initialize_app(cred, {
-                        'storageBucket': FIREBASE_STORAGE_BUCKET
-                    })
-            self.db = firestore.client()
-            self.bucket = storage.bucket(FIREBASE_STORAGE_BUCKET)
-            logger.info("[SUCCESS] Firebase initialized")
+            self.mongo_client = MongoClient(
+                MONGODB_URI,
+                serverSelectionTimeoutMS=5000,
+                connectTimeoutMS=5000,
+            )
+            self.mongo_client.admin.command("ping")
+            self.db = self.mongo_client["dhyanapp"]
+            logger.info("[SUCCESS] MongoDB initialized")
         except Exception as e:
-            logger.error(f"[ERROR] Failed to initialize Firebase: {e}")
+            logger.error(f"[ERROR] Failed to initialize MongoDB: {e}")
             self.db = None
-            self.bucket = None
 
-    def _get_services_password(self) -> str:
-        """Get the services password from Firebase config."""
+    def _initialize_minio(self):
+        """Initialize MinIO S3 client."""
         try:
-            if self.db:
-                doc = self.db.collection("config").document("secrets").get()
-                if doc.exists:
-                    secrets = doc.to_dict()
-                    return secrets.get("SERVICES_PASSWORD", "")
+            protocol = "https" if MINIO_SECURE else "http"
+            self.s3_client = boto3.client(
+                "s3",
+                endpoint_url=f"{protocol}://{MINIO_ENDPOINT}",
+                aws_access_key_id=MINIO_ACCESS_KEY,
+                aws_secret_access_key=MINIO_SECRET_KEY,
+                config=BotoConfig(signature_version="s3v4"),
+                region_name="us-east-1",
+            )
+            logger.info("[SUCCESS] MinIO initialized")
         except Exception as e:
-            logger.error(f"[ERROR] Failed to get services password: {e}")
-        return ""
+            logger.error(f"[ERROR] Failed to initialize MinIO: {e}")
+            self.s3_client = None
+
+    def _load_config_from_mongo(self):
+        """Load secrets and API keys from MongoDB config collection."""
+        self.secrets = {}
+        self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
+        try:
+            if self.db is not None:
+                config_doc = self.db["config"].find_one({"_id": "secrets"})
+                if config_doc:
+                    self.secrets = config_doc
+                    self.openai_api_key = config_doc.get("OPENAI_API_KEY", self.openai_api_key)
+                    logger.info("[SUCCESS] Loaded config from MongoDB")
+        except Exception as e:
+            logger.error(f"[ERROR] Failed to load config from MongoDB: {e}")
 
     def _load_accounts(self) -> dict:
-        """Load bot accounts from JSON file."""
+        """Load bot accounts from MongoDB."""
         try:
-            with open(BOT_ACCOUNTS_FILE, 'r') as f:
-                data = json.load(f)
-                return data.get('accounts', {})
+            return get_all_personas()
         except Exception as e:
             logger.error(f"[ERROR] Failed to load bot accounts: {e}")
             return {}
@@ -235,7 +261,7 @@ class PersonaPostGenerator:
         Returns:
             Festival data dictionary if today is a festival, None otherwise
         """
-        if not self.db:
+        if self.db is None:
             return None
 
         try:
@@ -248,15 +274,12 @@ class PersonaPostGenerator:
 
             logger.info(f"Checking for festivals on: {current_date_str}, {current_year}")
 
-            # Query festivals for current year
-            festivals_ref = self.db.collection('Festivals').document(current_year).collection('festivals')
-            festivals = festivals_ref.stream()
+            # Query festivals from MongoDB
+            festivals = self.db["Festivals"].find({"year": current_year})
 
-            for festival in festivals:
-                data = festival.to_dict()
+            for data in festivals:
                 festival_date = data.get('date', '')
 
-                # Normalize date comparison (handle "January 10" vs "January 10")
                 if festival_date.strip().lower() == current_date_str.strip().lower():
                     logger.info(f"[FESTIVAL] Today is: {data.get('name')}")
                     return {
@@ -434,29 +457,30 @@ Return ONLY valid JSON."""
         selected_follows = random.sample(follows, min(2, len(follows))) if follows else []
         selected_topics = random.sample(topics, min(2, len(topics))) if topics else []
 
-        prompt = f"""You are generating a web search query for a spiritual content post.
+        selected_saint = random.choice(selected_follows) if selected_follows else random.choice(follows) if follows else ""
+
+        prompt = f"""You are an expert on Indian spiritual traditions, especially the life and teachings of {selected_saint or 'great Indian saints'}.
+
+First, think of a SPECIFIC and FASCINATING incident, story, or teaching. Consider:
+- A pivotal moment in {selected_saint}'s life (meeting their guru, a moment of awakening, a test of faith)
+- A specific dialogue or exchange with a disciple that reveals deep wisdom
+- A miracle, transformation, or dramatic event from their life
+- A lesser-known but powerful story that most people haven't heard
+- A specific parable or teaching story they used to explain a concept
+- An incident that shows their character (humility, devotion, fearlessness, compassion)
+- Their encounters with rulers, skeptics, or other saints
+- Stories from {', '.join(scriptures[:2]) if scriptures else 'sacred texts'} involving specific characters and events
 
 Account Persona: {persona}
+Teachers/Saints: {', '.join(follows)}
+Topics: {', '.join(topics)}
 
-Teachers/Saints they follow: {', '.join(follows)}
-Topics of interest: {', '.join(topics)}
-Scriptures: {', '.join(scriptures)}
+Now generate a SPECIFIC web search query to find that particular story or incident.
 
-Generate a search query to find ONE of the following types of content:
-1. A story or incident from the life of one of these saints: {', '.join(selected_follows)}
-2. A teaching, parable, or anecdote from: {', '.join(scriptures)}
-3. A mythological story related to: {', '.join(selected_topics)}
-4. An inspiring incident from Indian spiritual heritage
+AVOID generic queries like "teachings of {selected_saint}" or "{selected_saint} stories".
+PREFER queries like "How {selected_saint} [specific event]" or "{selected_saint} and [person] [specific incident]".
 
-The query should be specific enough to find a particular story or incident, not generic.
-
-Return ONLY the search query text, nothing else. Keep it under 15 words.
-Examples of good queries:
-- "Story of Swami Vivekananda meeting Ramakrishna first time"
-- "Kabir Das teaching about ego doha story"
-- "Arjuna and Krishna dialogue about duty Mahabharata"
-- "Ramana Maharshi story about self-inquiry"
-"""
+Return ONLY the search query text, nothing else. Keep it under 15 words."""
 
         try:
             response = self.client.chat.completions.create(
@@ -611,26 +635,29 @@ Return ONLY valid JSON."""
         Returns:
             Tuple of (Image generation prompt, selected style dict)
         """
+        content = post_data.get('content', '')
         source_topic = post_data.get('source_topic', post_data.get('saying', 'spirituality'))
 
         # Select a random style from the available styles
         selected_style = random.choice(IMAGE_STYLES)
 
-        prompt = f"""Create a beautiful, serene image for a spiritual post about "{source_topic}".
+        prompt = f"""Create a beautiful, serene image for a spiritual post.
+
+POST CONTENT:
+"{content[:500]}"
+
+Based on this post's story and meaning, create a visual scene that captures its essence.
 
 ART STYLE: {selected_style['name']}
 Style Description: {selected_style['description']}
 Color Palette: {selected_style['colors']}
 
-Additional requirements:
+Requirements:
 - NO TEXT whatsoever - purely visual
-- Could include: lotus flowers, temple architecture, nature scenes, spiritual symbols appropriate to the style
+- The image should visually depict the key scene, story, or teaching described in the post
+- Can include: human faces, graceful female figures, nature scenes, Hindu imagery, Hindu gods and goddesses (Shiva, Krishna, Lakshmi, Saraswati, Ganesh, etc.), temples, lotus flowers, mandalas, meditating figures, spiritual symbols
 - Peaceful, meditative mood
 - Professional quality suitable for a meditation app
-- No human faces or modern elements
-- Can include silhouettes of meditating figures if appropriate
-
-The image should evoke: {post_data.get('saying', 'inner peace')}
 
 IMPORTANT: Do NOT include any text, letters, words, or typography in the image.
 Strictly follow the {selected_style['name']} art style."""
@@ -646,10 +673,14 @@ Strictly follow the {selected_style['name']} art style."""
             post_id: Post ID for naming
 
         Returns:
-            Firebase Storage URL or None
+            MinIO public URL or None
         """
         if not self.services_password:
             logger.error("[ERROR] Services password not available")
+            return None
+
+        if not self.s3_client:
+            logger.error("[ERROR] MinIO not initialized")
             return None
 
         try:
@@ -669,41 +700,41 @@ Strictly follow the {selected_style['name']} art style."""
                 logger.error(f"[ERROR] Image generation failed: {response.status_code} - {response.text}")
                 return None
 
-            # Upload to Firebase Storage
+            # Upload to MinIO
             image_bytes = response.content
-            blob_path = f"Posts/images/bot_posts/{post_id}.webp"
-            blob = self.bucket.blob(blob_path)
+            object_key = f"Posts/images/bot_posts/{post_id}.webp"
+            self.s3_client.put_object(
+                Bucket=MINIO_BUCKET,
+                Key=object_key,
+                Body=image_bytes,
+                ContentType="image/webp",
+            )
 
-            blob.upload_from_string(image_bytes, content_type='image/webp')
-            blob.make_public()
+            base_url = MINIO_PUBLIC_URL if MINIO_PUBLIC_URL else f"http://{MINIO_ENDPOINT}"
+            public_url = f"{base_url}/{MINIO_BUCKET}/{object_key}"
 
-            blob.metadata = {'firebaseStorageDownloadTokens': post_id}
-            blob.patch()
-
-            firebase_url = f"https://firebasestorage.googleapis.com/v0/b/{FIREBASE_STORAGE_BUCKET}/o/{blob_path.replace('/', '%2F')}?alt=media&token={post_id}"
-
-            logger.info(f"[SUCCESS] Image uploaded to Firebase")
-            return firebase_url
+            logger.info(f"[SUCCESS] Image uploaded to MinIO")
+            return public_url
 
         except Exception as e:
             logger.error(f"[ERROR] Failed to generate/upload image: {e}")
             return None
 
-    def push_post_to_firestore(self, account: dict, post_data: dict, image_url: Optional[str], post_id: str) -> Optional[str]:
+    def push_post_to_db(self, account: dict, post_data: dict, image_url: Optional[str], post_id: str) -> Optional[str]:
         """
-        Push the generated post to Firestore.
+        Push the generated post to MongoDB.
 
         Args:
             account: Account dictionary
             post_data: Post content dictionary
-            image_url: Firebase Storage URL for image
+            image_url: MinIO URL for image
             post_id: Pre-generated post ID
 
         Returns:
             Document ID if successful
         """
-        if not self.db:
-            logger.error("[ERROR] Firestore not connected")
+        if self.db is None:
+            logger.error("[ERROR] MongoDB not connected")
             return None
 
         created_at_ms = int(datetime.now(IST).timestamp() * 1000)
@@ -744,8 +775,13 @@ Strictly follow the {selected_style['name']} art style."""
         }
 
         try:
-            self.db.collection("posts").document(post_id).set(doc_data)
-            logger.info(f"[SUCCESS] Post pushed to Firestore: {post_id}")
+            doc_data["_id"] = post_id
+            self.db["posts"].update_one(
+                {"_id": post_id},
+                {"$set": doc_data},
+                upsert=True
+            )
+            logger.info(f"[SUCCESS] Post pushed to MongoDB: {post_id}")
             return post_id
         except Exception as e:
             logger.error(f"[ERROR] Failed to push post: {e}")
@@ -816,8 +852,8 @@ Strictly follow the {selected_style['name']} art style."""
         # Add style info to post data for metadata
         post_data['_image_style'] = selected_style['name']
 
-        # Step 6: Push to Firestore
-        doc_id = self.push_post_to_firestore(account, post_data, image_url, post_id)
+        # Step 6: Push to MongoDB
+        doc_id = self.push_post_to_db(account, post_data, image_url, post_id)
 
         if doc_id:
             logger.info(f"[SUCCESS] Post created: {doc_id}")
@@ -941,18 +977,16 @@ if __name__ == "__main__":
 
             # Show upcoming festivals
             print("\nUpcoming festivals in 2026:")
-            festivals = generator.db.collection('Festivals').document('2026').collection('festivals').stream()
-            for f in festivals:
-                d = f.to_dict()
+            festivals = generator.db["Festivals"].find({"year": "2026"})
+            for d in festivals:
                 print(f"  - {d.get('date')}: {d.get('name')}")
 
     elif args.test_festival:
         # Find the festival by name and test
         print(f"\nTesting festival post for: {args.test_festival}")
-        festivals = generator.db.collection('Festivals').document('2026').collection('festivals').stream()
+        festivals = generator.db["Festivals"].find({"year": "2026"})
         festival_data = None
-        for f in festivals:
-            d = f.to_dict()
+        for d in festivals:
             if d.get('name', '').lower() == args.test_festival.lower():
                 festival_data = {
                     'name': d.get('name', ''),

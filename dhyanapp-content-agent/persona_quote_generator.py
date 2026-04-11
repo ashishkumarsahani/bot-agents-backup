@@ -39,23 +39,32 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 IST = ZoneInfo("Asia/Kolkata")
-BOT_ACCOUNTS_FILE = Path(__file__).parent / "bot_accounts.json"
 ROTATION_STATE_FILE = Path(__file__).parent / "quote_rotation_state.json"
+
+from bot_personas_store import get_all_personas
 FONTS_DIR = Path(__file__).parent / "fonts"
 
 # API Configuration
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "d85ad7c3297a1e315dd011b058b5d81c749fd07b")
 DHYANAPP_SERVICES_URL = "https://dhyanapp-services.epilepto.com"
 
-# Firebase
-import firebase_admin
-from firebase_admin import credentials, firestore, storage
+# MongoDB + MinIO
+from pymongo import MongoClient
+import boto3
+from botocore.client import Config as BotoConfig
 
-FIREBASE_CREDENTIALS_PATH = os.getenv(
-    "FIREBASE_CREDENTIALS_PATH",
-    os.path.join(os.path.dirname(__file__), "firebase_credentials.json")
-)
-FIREBASE_STORAGE_BUCKET = "dhyanapp-90de4.appspot.com"
+# MongoDB Configuration
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://dhyanadmin:Dhyan%40Mongo2026!@localhost:27017/dhyanapp?authSource=admin&replicaSet=rs0")
+
+# MinIO Configuration
+_minio_host = os.getenv("MINIO_ENDPOINT", "localhost")
+_minio_port = os.getenv("MINIO_PORT", "9000")
+MINIO_ENDPOINT = _minio_host if ":" in _minio_host else f"{_minio_host}:{_minio_port}"
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+MINIO_BUCKET = os.getenv("MINIO_BUCKET", "dhyanapp-recordings")
+MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
+MINIO_PUBLIC_URL = os.getenv("MINIO_PUBLIC_URL", "https://storage.dhyanapp.org")
 
 # Font Configuration - Multiple options for variety
 QUOTE_FONTS = {
@@ -230,47 +239,64 @@ class PersonaQuoteGenerator:
 
     def __init__(self):
         """Initialize the persona quote generator."""
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.accounts = self._load_accounts()
         self.rotation_state = self._load_rotation_state()
-        self._initialize_firebase()
-        self.services_password = self._get_services_password()
+        self._initialize_mongodb()
+        self._initialize_minio()
+        self._load_config_from_mongo()
+        self.client = OpenAI(api_key=self.openai_api_key)
+        self.services_password = self.secrets.get("SERVICES_PASSWORD", "")
 
-    def _initialize_firebase(self):
-        """Initialize Firebase."""
+    def _initialize_mongodb(self):
+        """Initialize MongoDB connection."""
         try:
-            if not firebase_admin._apps:
-                if os.path.exists(FIREBASE_CREDENTIALS_PATH):
-                    cred = credentials.Certificate(FIREBASE_CREDENTIALS_PATH)
-                    firebase_admin.initialize_app(cred, {
-                        'storageBucket': FIREBASE_STORAGE_BUCKET
-                    })
-            self.db = firestore.client()
-            self.bucket = storage.bucket(FIREBASE_STORAGE_BUCKET)
-            logger.info("[SUCCESS] Firebase initialized for quotes")
+            self.mongo_client = MongoClient(
+                MONGODB_URI,
+                serverSelectionTimeoutMS=5000,
+                connectTimeoutMS=5000,
+            )
+            self.mongo_client.admin.command("ping")
+            self.db = self.mongo_client["dhyanapp"]
+            logger.info("[SUCCESS] MongoDB initialized for quotes")
         except Exception as e:
-            logger.error(f"[ERROR] Failed to initialize Firebase: {e}")
+            logger.error(f"[ERROR] Failed to initialize MongoDB: {e}")
             self.db = None
-            self.bucket = None
 
-    def _get_services_password(self) -> str:
-        """Get the services password from Firebase config."""
+    def _initialize_minio(self):
+        """Initialize MinIO S3 client."""
         try:
-            if self.db:
-                doc = self.db.collection("config").document("secrets").get()
-                if doc.exists:
-                    secrets = doc.to_dict()
-                    return secrets.get("SERVICES_PASSWORD", "")
+            protocol = "https" if MINIO_SECURE else "http"
+            self.s3_client = boto3.client(
+                "s3",
+                endpoint_url=f"{protocol}://{MINIO_ENDPOINT}",
+                aws_access_key_id=MINIO_ACCESS_KEY,
+                aws_secret_access_key=MINIO_SECRET_KEY,
+                config=BotoConfig(signature_version="s3v4"),
+                region_name="us-east-1",
+            )
+            logger.info("[SUCCESS] MinIO initialized for quotes")
         except Exception as e:
-            logger.error(f"[ERROR] Failed to get services password: {e}")
-        return ""
+            logger.error(f"[ERROR] Failed to initialize MinIO: {e}")
+            self.s3_client = None
+
+    def _load_config_from_mongo(self):
+        """Load secrets and API keys from MongoDB config collection."""
+        self.secrets = {}
+        self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
+        try:
+            if self.db is not None:
+                config_doc = self.db["config"].find_one({"_id": "secrets"})
+                if config_doc:
+                    self.secrets = config_doc
+                    self.openai_api_key = config_doc.get("OPENAI_API_KEY", self.openai_api_key)
+                    logger.info("[SUCCESS] Loaded config from MongoDB")
+        except Exception as e:
+            logger.error(f"[ERROR] Failed to load config from MongoDB: {e}")
 
     def _load_accounts(self) -> dict:
-        """Load bot accounts from JSON file."""
+        """Load bot accounts from MongoDB."""
         try:
-            with open(BOT_ACCOUNTS_FILE, 'r') as f:
-                data = json.load(f)
-                return data.get('accounts', {})
+            return get_all_personas()
         except Exception as e:
             logger.error(f"[ERROR] Failed to load bot accounts: {e}")
             return {}
@@ -330,20 +356,21 @@ class PersonaQuoteGenerator:
 
         source = random.choice(all_sources) if all_sources else "spiritual wisdom"
 
-        prompt = f"""Generate a web search query to find an authentic quote from {source}.
+        prompt = f"""You are an expert on {source} and their teachings, philosophy, and life.
 
-The query should help find actual quotes, sayings, or teachings.
+First, think of a SPECIFIC and LESSER-KNOWN aspect of {source}'s wisdom. Consider:
+- A particular teaching or concept they are known for (e.g., "Who am I?" inquiry for Ramana Maharshi)
+- A specific verse, doha, or shloka they composed
+- Their views on a particular topic (devotion, surrender, karma, maya, consciousness, love, death, ego)
+- A famous dialogue or exchange they had with a disciple
+- A poetic or mystical expression unique to their tradition
 
-Examples of good queries:
-- "Ramana Maharshi quotes on self-inquiry"
-- "Kabir Das famous dohe hindi"
-- "Bhagavad Gita verse on duty karma"
-- "Swami Vivekananda quotes on courage strength"
-- "Rumi quotes on love soul"
+Then generate a focused web search query to find an authentic quote related to that specific aspect.
 
-Generate ONE specific search query for: {source}
+AVOID generic queries like "{source} quotes" or "{source} famous sayings".
+PREFER specific queries like "{source} teaching on [specific concept]" or "{source} verse about [specific theme]".
 
-Return ONLY the search query text, nothing else."""
+Return ONLY the search query text, nothing else. Keep it under 15 words."""
 
         try:
             response = self.client.chat.completions.create(
@@ -567,28 +594,40 @@ Return ONLY the commentary text."""
             logger.error(f"[ERROR] Failed to generate commentary: {e}")
             return "This wisdom resonates deeply with my spiritual journey."
 
-    def generate_quote_background(self, quote_topic: str, post_id: str) -> Optional[bytes]:
-        """Generate background image for quote."""
+    def generate_quote_image(self, quote_text: str, attribution: str,
+                             quote_topic: str, language: str, post_id: str) -> Optional[bytes]:
+        """Generate image with quote text rendered by GPT."""
         if not self.services_password:
             logger.error("[ERROR] Services password not available")
             return None
 
         selected_style = random.choice(QUOTE_IMAGE_STYLES)
 
-        prompt = f"""Create a beautiful, serene background image for a spiritual quote about "{quote_topic}".
+        prompt = f"""Create a beautiful, serene spiritual quote image with text.
+
+THE QUOTE:
+"{quote_text}"
+— {attribution}
+
+Based on this quote's meaning, create a visual scene that captures its essence.
 
 ART STYLE: {selected_style['name']}
 Style Description: {selected_style['description']}
 Color Palette: {selected_style['colors']}
 
 Requirements:
-- NO TEXT whatsoever - purely visual background
-- Leave space in the center for text overlay (darker/calmer center area)
-- Subtle, not distracting from text that will be overlaid
-- Spiritual, peaceful, meditative atmosphere
+- Render the quote text EXACTLY as provided above, centered on the image
+- Use an elegant, highly legible font style that suits the spiritual theme
+- {"Use Devanagari script for the Hindi quote text" if language == "hindi" else "Use a beautiful serif or calligraphic English font"}
+- The attribution line should be smaller, placed below the quote
+- Ensure strong contrast between text and background for readability
+- The background imagery should visually represent the quote's meaning and emotion
+- If the quote is attributed to a known saint, guru, or spiritual teacher ({attribution}), depict them in the image — show their recognizable appearance, attire, and setting (e.g., Ramana Maharshi seated serenely at Arunachala, Kabir at his loom, Swami Vivekananda in his iconic turban). Place the saint figure prominently but ensure the quote text remains legible.
+- If the quote is from a scripture or anonymous source, depict a scene that embodies the quote's theme instead
+- Can include: human faces, graceful female figures, nature scenes, Hindu imagery, Hindu gods and goddesses (Shiva, Krishna, Lakshmi, Saraswati, Ganesh, etc.), temples, lotus flowers, mandalas
 - Professional quality suitable for a meditation app
 
-IMPORTANT: Do NOT include any text, letters, words, or typography."""
+IMPORTANT: Render the quote text EXACTLY as written — do NOT change, shorten, or paraphrase it."""
 
         try:
             response = requests.post(
@@ -603,15 +642,49 @@ IMPORTANT: Do NOT include any text, letters, words, or typography."""
                 timeout=120
             )
 
-            if response.status_code != 200:
-                logger.error(f"[ERROR] Image generation failed: {response.status_code}")
-                return None
+            if response.status_code == 200:
+                logger.info(f"[SUCCESS] Generated quote image ({selected_style['name']})")
+                return response.content
 
-            logger.info(f"[SUCCESS] Generated quote background ({selected_style['name']})")
-            return response.content
+            logger.error(f"[ERROR] Image generation failed: {response.status_code} - {response.text[:500]}")
+
+            # Retry with a simplified prompt (content policy may have rejected the original)
+            logger.info("[RETRY] Retrying image generation with simplified prompt...")
+            simplified_prompt = f"""Create a beautiful, serene spiritual background image for a quote.
+
+Theme: {quote_topic}
+ART STYLE: {selected_style['name']}
+Style Description: {selected_style['description']}
+Color Palette: {selected_style['colors']}
+
+Requirements:
+- Create a peaceful, meditative background scene related to the theme
+- Include nature elements like lotus flowers, flowing water, mountains, or serene landscapes
+- Soft, warm lighting with spiritual atmosphere
+- Professional quality suitable for a meditation app
+- Do NOT include any text in the image"""
+
+            retry_response = requests.post(
+                f"{DHYANAPP_SERVICES_URL}/image_1/generate",
+                json={
+                    "prompt": simplified_prompt,
+                    "password": self.services_password,
+                    "user_id": "quote_bot",
+                    "size": "square",
+                    "quality": "medium"
+                },
+                timeout=120
+            )
+
+            if retry_response.status_code == 200:
+                logger.info(f"[SUCCESS] Generated quote image on retry ({selected_style['name']})")
+                return retry_response.content
+
+            logger.error(f"[ERROR] Retry also failed: {retry_response.status_code} - {retry_response.text[:500]}")
+            return None
 
         except Exception as e:
-            logger.error(f"[ERROR] Failed to generate background: {e}")
+            logger.error(f"[ERROR] Failed to generate quote image: {e}")
             return None
 
     def _select_random_font(self, language: str) -> dict:
@@ -782,22 +855,25 @@ IMPORTANT: Do NOT include any text, letters, words, or typography."""
         img.convert('RGB').save(output, format='PNG', quality=95)
         return output.getvalue(), font_config['name']
 
-    def upload_image_to_firebase(self, image_bytes: bytes, post_id: str) -> Optional[str]:
-        """Upload image to Firebase Storage."""
+    def upload_image_to_minio(self, image_bytes: bytes, post_id: str) -> Optional[str]:
+        """Upload image to MinIO storage."""
+        if not self.s3_client:
+            logger.error("[ERROR] MinIO not initialized")
+            return None
         try:
-            blob_path = f"Posts/images/bot_quotes/{post_id}.png"
-            blob = self.bucket.blob(blob_path)
+            object_key = f"Posts/images/bot_quotes/{post_id}.png"
+            self.s3_client.put_object(
+                Bucket=MINIO_BUCKET,
+                Key=object_key,
+                Body=image_bytes,
+                ContentType="image/png",
+            )
 
-            blob.upload_from_string(image_bytes, content_type='image/png')
-            blob.make_public()
+            base_url = MINIO_PUBLIC_URL if MINIO_PUBLIC_URL else f"http://{MINIO_ENDPOINT}"
+            public_url = f"{base_url}/{MINIO_BUCKET}/{object_key}"
 
-            blob.metadata = {'firebaseStorageDownloadTokens': post_id}
-            blob.patch()
-
-            firebase_url = f"https://firebasestorage.googleapis.com/v0/b/{FIREBASE_STORAGE_BUCKET}/o/{blob_path.replace('/', '%2F')}?alt=media&token={post_id}"
-
-            logger.info(f"[SUCCESS] Quote image uploaded to Firebase")
-            return firebase_url
+            logger.info(f"[SUCCESS] Quote image uploaded to MinIO")
+            return public_url
 
         except Exception as e:
             logger.error(f"[ERROR] Failed to upload image: {e}")
@@ -813,9 +889,9 @@ IMPORTANT: Do NOT include any text, letters, words, or typography."""
 
     def push_quote_post(self, account: dict, quote_data: dict, commentary: str,
                         image_url: Optional[str], post_id: str) -> Optional[str]:
-        """Push the quote post to Firestore."""
-        if not self.db:
-            logger.error("[ERROR] Firestore not connected")
+        """Push the quote post to MongoDB."""
+        if self.db is None:
+            logger.error("[ERROR] MongoDB not connected")
             return None
 
         created_at_ms = int(datetime.now(IST).timestamp() * 1000)
@@ -858,12 +934,16 @@ IMPORTANT: Do NOT include any text, letters, words, or typography."""
             "_quoteSource": "ai_generated" if quote_data.get('is_ai_generated') else "web_search",
             "_quoteAttribution": quote_data['attribution'],
             "_language": quote_data.get('language', 'english'),
-            "_fontUsed": quote_data.get('_font_used', ''),
         }
 
         try:
-            self.db.collection("posts").document(post_id).set(doc_data)
-            logger.info(f"[SUCCESS] Quote post pushed to Firestore: {post_id}")
+            doc_data["_id"] = post_id
+            self.db["posts"].update_one(
+                {"_id": post_id},
+                {"$set": doc_data},
+                upsert=True
+            )
+            logger.info(f"[SUCCESS] Quote post pushed to MongoDB: {post_id}")
             return post_id
         except Exception as e:
             logger.error(f"[ERROR] Failed to push quote post: {e}")
@@ -903,35 +983,26 @@ IMPORTANT: Do NOT include any text, letters, words, or typography."""
         # Step 5: Generate post ID
         post_id = str(uuid.uuid4())
 
-        # Step 6: Generate background image
+        # Step 6: Generate quote image with text rendered by GPT
         topic = quote_data.get('topic', source)
-        logger.info(f"Generating background image for: {topic}")
-        background_bytes = self.generate_quote_background(topic, post_id)
+        language = quote_data.get('language', 'english')
+        logger.info(f"Generating quote image for: {topic}")
+        image_bytes = self.generate_quote_image(
+            quote_data['quote'],
+            quote_data['attribution'],
+            topic, language, post_id
+        )
 
         image_url = None
-        font_used = None
-        if background_bytes:
-            # Step 7: Add text overlay with random font
-            language = quote_data.get('language', 'english')
-            image_with_text, font_used = self.add_quote_text_overlay(
-                background_bytes,
-                quote_data['quote'],
-                quote_data['attribution'],
-                language
-            )
-            logger.info(f"Font used: {font_used}")
-
-            # Step 8: Upload to Firebase
-            image_url = self.upload_image_to_firebase(image_with_text, post_id)
+        if image_bytes:
+            # Step 7: Upload to MinIO
+            image_url = self.upload_image_to_minio(image_bytes, post_id)
             if image_url:
                 logger.info(f"Image URL: {image_url[:60]}...")
         else:
             logger.warning("Posting quote without image")
 
-        # Add font info to quote data
-        quote_data['_font_used'] = font_used
-
-        # Step 9: Push to Firestore
+        # Step 9: Push to MongoDB
         doc_id = self.push_quote_post(account, quote_data, commentary, image_url, post_id)
 
         if doc_id:

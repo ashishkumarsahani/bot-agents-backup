@@ -20,8 +20,7 @@ from typing import Optional, List
 
 from openai import OpenAI
 from dotenv import load_dotenv
-import firebase_admin
-from firebase_admin import credentials, firestore
+from pymongo import MongoClient
 
 load_dotenv()
 
@@ -34,12 +33,11 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 IST = ZoneInfo("Asia/Kolkata")
-BOT_ACCOUNTS_FILE = Path(__file__).parent / "bot_accounts.json"
 
-FIREBASE_CREDENTIALS_PATH = os.getenv(
-    "FIREBASE_CREDENTIALS_PATH",
-    os.path.join(os.path.dirname(__file__), "firebase_credentials.json")
-)
+from bot_personas_store import get_all_personas
+
+# MongoDB Configuration
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://dhyanadmin:Dhyan%40Mongo2026!@localhost:27017/dhyanapp?authSource=admin&replicaSet=rs0")
 
 
 class EngagementService:
@@ -47,36 +45,49 @@ class EngagementService:
 
     def __init__(self):
         """Initialize the engagement service."""
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.accounts = self._load_accounts()
-        self._initialize_firebase()
+        self._initialize_mongodb()
+        self._load_config_from_mongo()
+        self.client = OpenAI(api_key=self.openai_api_key)
 
-    def _initialize_firebase(self):
-        """Initialize Firebase."""
+    def _initialize_mongodb(self):
+        """Initialize MongoDB connection."""
         try:
-            if not firebase_admin._apps:
-                if os.path.exists(FIREBASE_CREDENTIALS_PATH):
-                    cred = credentials.Certificate(FIREBASE_CREDENTIALS_PATH)
-                    firebase_admin.initialize_app(cred)
-            self.db = firestore.client()
-            logger.info("[SUCCESS] Firebase initialized for engagement")
+            self.mongo_client = MongoClient(
+                MONGODB_URI,
+                serverSelectionTimeoutMS=5000,
+                connectTimeoutMS=5000,
+            )
+            self.mongo_client.admin.command("ping")
+            self.db = self.mongo_client["dhyanapp"]
+            logger.info("[SUCCESS] MongoDB initialized for engagement")
         except Exception as e:
-            logger.error(f"[ERROR] Failed to initialize Firebase: {e}")
+            logger.error(f"[ERROR] Failed to initialize MongoDB: {e}")
             self.db = None
 
-    def _load_accounts(self) -> dict:
-        """Load bot accounts from JSON file."""
+    def _load_config_from_mongo(self):
+        """Load API keys from MongoDB config collection."""
+        self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
         try:
-            with open(BOT_ACCOUNTS_FILE, 'r') as f:
-                data = json.load(f)
-                return data.get('accounts', {})
+            if self.db is not None:
+                config_doc = self.db["config"].find_one({"_id": "secrets"})
+                if config_doc:
+                    self.openai_api_key = config_doc.get("OPENAI_API_KEY", self.openai_api_key)
+                    logger.info("[SUCCESS] Loaded config from MongoDB")
+        except Exception as e:
+            logger.error(f"[ERROR] Failed to load config from MongoDB: {e}")
+
+    def _load_accounts(self) -> dict:
+        """Load bot accounts from MongoDB."""
+        try:
+            return get_all_personas()
         except Exception as e:
             logger.error(f"[ERROR] Failed to load bot accounts: {e}")
             return {}
 
     def get_post_content(self, post_id: str) -> Optional[dict]:
         """
-        Get post content from Firestore.
+        Get post content from MongoDB.
 
         Args:
             post_id: The post document ID
@@ -85,17 +96,15 @@ class EngagementService:
             Post data dictionary or None
         """
         try:
-            doc = self.db.collection('posts').document(post_id).get()
-            if doc.exists:
-                return doc.to_dict()
-            return None
+            doc = self.db["posts"].find_one({"_id": post_id})
+            return doc
         except Exception as e:
             logger.error(f"[ERROR] Failed to get post: {e}")
             return None
 
     def get_existing_comments(self, post_id: str) -> List[dict]:
         """
-        Get existing comments on a post.
+        Get existing comments on a post from MongoDB.
 
         Args:
             post_id: The post document ID
@@ -104,16 +113,18 @@ class EngagementService:
             List of comment dictionaries
         """
         try:
-            comments_ref = self.db.collection('posts').document(post_id).collection('Comments')
-            comments = comments_ref.order_by('createdAt').stream()
-            return [{'id': c.id, **c.to_dict()} for c in comments]
+            comments = list(self.db["post_comments"].find(
+                {"postId": post_id}
+            ).sort("createdAt", 1))
+            return [{'id': c.get('_id', c.get('commentId')), **c} for c in comments]
         except Exception as e:
             logger.error(f"[ERROR] Failed to get comments: {e}")
             return []
 
     def add_like(self, post_id: str, user_id: str) -> bool:
         """
-        Add a like to a post.
+        Add a like to a post in MongoDB.
+        The change stream trigger automatically increments likeCount on the post.
 
         Args:
             post_id: The post document ID
@@ -121,19 +132,17 @@ class EngagementService:
 
         Returns:
             True if successful
-
-        Note: likeCount is incremented automatically by Cloud Function (handleLikeCreated)
         """
         try:
             timestamp = int(datetime.now(IST).timestamp() * 1000)
 
-            # Add to Likes subcollection
-            # Cloud Function handleLikeCreated will increment likeCount automatically
-            like_ref = self.db.collection('posts').document(post_id).collection('Likes').document(user_id)
-            like_ref.set({
-                'userId': user_id,
-                'timestamp': timestamp
-            })
+            # Upsert into post_likes collection (idempotent)
+            # Change stream trigger handles likeCount increment
+            self.db["post_likes"].update_one(
+                {"postId": post_id, "userId": user_id},
+                {"$setOnInsert": {"postId": post_id, "userId": user_id, "timestamp": timestamp}},
+                upsert=True
+            )
 
             logger.info(f"[SUCCESS] Like added by {user_id}")
             return True
@@ -143,7 +152,8 @@ class EngagementService:
 
     def add_comment(self, post_id: str, user_id: str, comment_text: str, reply_to: Optional[str] = None) -> Optional[str]:
         """
-        Add a comment to a post.
+        Add a comment to a post in MongoDB.
+        The change stream trigger automatically increments commentCount on the post.
 
         Args:
             post_id: The post document ID
@@ -153,22 +163,21 @@ class EngagementService:
 
         Returns:
             Comment ID if successful
-
-        Note: commentCount is incremented automatically by Cloud Function (handleCommentCreated)
         """
         try:
             timestamp = int(datetime.now(IST).timestamp() * 1000)
             comment_id = f"{timestamp}{user_id}"
 
-            # Add to Comments subcollection
-            # Cloud Function handleCommentCreated will increment commentCount automatically
-            comment_ref = self.db.collection('posts').document(post_id).collection('Comments').document(comment_id)
-            comment_ref.set({
-                'commentId': comment_id,
-                'comment': comment_text,
-                'createdBy': user_id,
-                'createdAt': timestamp,
-                'repliedTo': reply_to
+            # Insert into post_comments collection
+            # Change stream trigger handles commentCount increment + notifications
+            self.db["post_comments"].insert_one({
+                "postId": post_id,
+                "commentId": comment_id,
+                "comment": comment_text,
+                "createdBy": user_id,
+                "createdAt": timestamp,
+                "commentLikesCount": 0,
+                "repliedTo": reply_to
             })
 
             logger.info(f"[SUCCESS] Comment added by {user_id}: {comment_text[:50]}...")
