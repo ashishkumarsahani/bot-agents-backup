@@ -32,14 +32,6 @@ AGENTS = [
         "process_grep": "celery.*p1_social",
     },
     {
-        "name": "YouTube Event Agent",
-        "description": "Monitors YouTube channels for livestreams and creates events in MongoDB",
-        "script": "/home/admin/DhyanApp-CreatorTools/scripts/youtube_event_agent.py",
-        "cron": "30 * * * * (every hour at :30)",
-        "log": "/home/admin/logs/youtube_event_agent.log",
-        "type": "cron",
-    },
-    {
         "name": "Change Stream Watcher",
         "description": "Real-time MongoDB change stream watcher dispatching events to Celery",
         "script": "/home/admin/dhyan-triggers/src/dhyan_triggers/watcher/main.py",
