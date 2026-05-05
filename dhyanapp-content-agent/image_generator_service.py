@@ -22,6 +22,8 @@ import firebase_admin
 from firebase_admin import credentials, storage
 from dotenv import load_dotenv
 
+from llm_usage_tracker import record_openai_image
+
 load_dotenv()
 
 # Configuration
@@ -133,6 +135,7 @@ IMPORTANT: Do NOT include any text, letters, words, or typography in the image. 
                 quality="standard",
                 n=1,
             )
+            record_openai_image(model="dall-e-3", service="image_generator.background", n=1)
 
             image_url = response.data[0].url
             print(f"[SUCCESS] Background image generated")

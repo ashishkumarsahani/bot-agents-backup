@@ -20,6 +20,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+from llm_usage_tracker import record_openai_response, record_openai_image
 from calendarific_service import get_calendarific_service
 from festival_history_manager import get_festival_history_manager
 from firestore_service import get_firestore_service
@@ -199,6 +200,7 @@ Return ONLY JSON."""
                 temperature=0.8,
                 max_tokens=800
             )
+            record_openai_response(response, service="festival_post.generate")
 
             content = response.choices[0].message.content.strip()
 
@@ -287,6 +289,7 @@ IMPORTANT: Do NOT include any text in the image."""
                 quality="standard",
                 n=1,
             )
+            record_openai_image(model="dall-e-3", service="festival_post.image", n=1)
 
             image_url = response.data[0].url
 

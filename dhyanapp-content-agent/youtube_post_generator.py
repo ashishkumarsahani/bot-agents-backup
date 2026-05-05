@@ -27,6 +27,8 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from pymongo import MongoClient
 
+from llm_usage_tracker import record_openai_response
+
 from bot_personas_store import _db, get_all_personas
 
 load_dotenv()
@@ -281,6 +283,7 @@ class YouTubePostGenerator:
         except Exception as e:
             logger.warning(f"[openai] generation failed: {e}")
             return None
+        record_openai_response(resp, service="youtube_post.generate")
         try:
             data = json.loads(resp.choices[0].message.content)
         except Exception as e:

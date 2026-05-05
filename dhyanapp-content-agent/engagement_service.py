@@ -22,6 +22,8 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from pymongo import MongoClient
 
+from llm_usage_tracker import record_openai_response
+
 load_dotenv()
 
 # Configure logging
@@ -193,6 +195,26 @@ class EngagementService:
                 return account.get('name')
         return None
 
+    def _tagged_us_user_ids(self, account: dict, existing_comments: List[dict]) -> set:
+        """Return user_ids of prior commenters whose comment text tags `account`.
+
+        Used to avoid tag-back loops: if bot A tagged bot B, B must not tag A.
+        """
+        if not existing_comments:
+            return set()
+        my_name = (account.get('name') or '').strip()
+        if not my_name:
+            return set()
+        first_token = my_name.split()[0].lower()
+        tagged_us: set = set()
+        for c in existing_comments:
+            text = (c.get('comment') or '').lower()
+            if f"@{my_name.lower()}" in text or f"@{first_token}" in text:
+                uid = c.get('createdBy')
+                if uid:
+                    tagged_us.add(uid)
+        return tagged_us
+
     def generate_anecdote(self, account: dict, post_content: str, post_language: str,
                           existing_comments: List[dict] = None, poster_name: str = None) -> str:
         """
@@ -215,8 +237,11 @@ class EngagementService:
         people_to_tag = []
         if poster_name:
             people_to_tag.append(poster_name)
+        tagged_us = self._tagged_us_user_ids(account, existing_comments or [])
         if existing_comments:
             for c in existing_comments[-3:]:
+                if c.get('createdBy') in tagged_us:
+                    continue  # don't tag back someone who already tagged us
                 commenter_name = self._get_commenter_name(c.get('createdBy'))
                 if commenter_name and commenter_name != account.get('name') and commenter_name not in people_to_tag:
                     people_to_tag.append(commenter_name)
@@ -264,6 +289,7 @@ Return ONLY the anecdote text."""
                 temperature=0.85,
                 max_tokens=200
             )
+            record_openai_response(response, service="engagement.anecdote")
             anecdote = response.choices[0].message.content.strip()
             anecdote = anecdote.strip('"\'')
             return anecdote
@@ -296,8 +322,11 @@ Return ONLY the anecdote text."""
         people_to_tag = []
         if poster_name:
             people_to_tag.append(poster_name)
+        tagged_us = self._tagged_us_user_ids(account, existing_comments or [])
         if existing_comments:
             for c in existing_comments[-4:]:
+                if c.get('createdBy') in tagged_us:
+                    continue  # don't tag back someone who already tagged us
                 commenter_name = self._get_commenter_name(c.get('createdBy'))
                 if commenter_name and commenter_name != account.get('name') and commenter_name not in people_to_tag:
                     people_to_tag.append(commenter_name)
@@ -388,6 +417,7 @@ Return ONLY the comment text."""
                 temperature=0.85,
                 max_tokens=200
             )
+            record_openai_response(response, service="engagement.comment")
             comment = response.choices[0].message.content.strip()
             comment = comment.strip('"\'')
             return comment
@@ -431,6 +461,10 @@ Return ONLY the comment text."""
 
         post_content = post_data.get('content', '')
         post_language = post_data.get('_language', 'english')
+
+        if len(post_content.strip()) < 10:
+            logger.info(f"Skipping engagement: post content under 10 chars ({len(post_content.strip())})")
+            return {"likes": 0, "comments": 0}
 
         # Get poster name
         poster_name = None

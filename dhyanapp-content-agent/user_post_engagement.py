@@ -23,6 +23,8 @@ from typing import Optional, List
 
 from openai import OpenAI
 from dotenv import load_dotenv
+
+from llm_usage_tracker import record_openai_response
 import firebase_admin
 from firebase_admin import credentials, firestore, storage
 
@@ -214,6 +216,7 @@ class UserPostEngagementService:
                 max_tokens=200,
                 temperature=0.5
             )
+            record_openai_response(response, service="user_engagement.analyze")
             analysis = response.choices[0].message.content.strip()
             logger.info(f"Post analysis: {analysis[:100]}...")
             return analysis
@@ -349,6 +352,7 @@ Return ONLY the comment text."""
                 temperature=0.85,
                 max_tokens=200
             )
+            record_openai_response(response, service="user_engagement.comment")
             comment = response.choices[0].message.content.strip()
             comment = comment.strip('"\'')
             return comment
@@ -410,6 +414,10 @@ Return ONLY the comment text."""
         post_content = post.get('content', '')
         image_url = post.get('imageUrl')
         creator_name = post.get('creatorName', 'User')
+
+        if len(post_content.strip()) < 10:
+            logger.info(f"Skipping post {post_id}: content under 10 chars ({len(post_content.strip())})")
+            return {"likes": 0, "comments": 0}
 
         logger.info(f"\n{'='*60}")
         logger.info(f"ENGAGING WITH USER POST: {post_id}")

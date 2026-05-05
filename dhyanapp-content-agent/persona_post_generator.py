@@ -48,6 +48,8 @@ DHYANAPP_SERVICES_URL = "https://dhyanapp-services.epilepto.com"
 
 # MongoDB + MinIO
 from pymongo import MongoClient
+
+from llm_usage_tracker import record_openai_response
 import boto3
 from botocore.client import Config as BotoConfig
 
@@ -361,6 +363,7 @@ Return ONLY valid JSON."""
                 temperature=0.8,
                 max_tokens=800
             )
+            record_openai_response(response, service="persona_post.festival")
 
             content = response.choices[0].message.content.strip()
 
@@ -492,6 +495,7 @@ Return ONLY the search query text, nothing else. Keep it under 15 words."""
                 temperature=0.9,
                 max_tokens=50
             )
+            record_openai_response(response, service="persona_post.search_query")
             query = response.choices[0].message.content.strip()
             query = query.strip('"\'')
             logger.info(f"Generated search query: {query}")
@@ -603,6 +607,7 @@ Return ONLY valid JSON."""
                 temperature=0.8,
                 max_tokens=800
             )
+            record_openai_response(response, service="persona_post.from_search")
 
             content = response.choices[0].message.content.strip()
 

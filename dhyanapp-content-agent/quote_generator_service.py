@@ -16,6 +16,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 from vector_store_service import get_vector_store_service
+from llm_usage_tracker import record_openai_response
 
 load_dotenv()
 
@@ -87,6 +88,7 @@ Return ONLY the JSON, no other text."""
                 temperature=0.8,
                 max_tokens=500
             )
+            record_openai_response(response, service="quote_generator")
 
             # Parse the response
             content = response.choices[0].message.content.strip()
@@ -177,6 +179,7 @@ Return ONLY the JSON, no other text."""
                 temperature=0.8,
                 max_tokens=500
             )
+            record_openai_response(response, service="quote_generator")
 
             # Parse the response
             content = response.choices[0].message.content.strip()

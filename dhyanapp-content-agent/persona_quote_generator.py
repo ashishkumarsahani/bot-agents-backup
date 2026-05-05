@@ -50,6 +50,8 @@ DHYANAPP_SERVICES_URL = "https://dhyanapp-services.epilepto.com"
 
 # MongoDB + MinIO
 from pymongo import MongoClient
+
+from llm_usage_tracker import record_openai_response
 import boto3
 from botocore.client import Config as BotoConfig
 
@@ -382,6 +384,7 @@ Return ONLY the search query text, nothing else. Keep it under 15 words."""
                 temperature=0.8,
                 max_tokens=50
             )
+            record_openai_response(response, service="persona_quote.search_query")
             query = response.choices[0].message.content.strip().strip('"\'')
             logger.info(f"Generated quote search query: {query} (source: {source})")
             return query, source
@@ -463,6 +466,7 @@ Return ONLY valid JSON."""
                 temperature=0.3,
                 max_tokens=300
             )
+            record_openai_response(response, service="persona_quote.extract_authentic")
 
             content = response.choices[0].message.content.strip()
             if content.startswith("```"):
@@ -530,6 +534,7 @@ Return ONLY valid JSON."""
                 temperature=0.9,
                 max_tokens=300
             )
+            record_openai_response(response, service="persona_quote.generate")
 
             content = response.choices[0].message.content.strip()
             if content.startswith("```"):
@@ -588,6 +593,7 @@ Return ONLY the commentary text."""
                 temperature=0.85,
                 max_tokens=200
             )
+            record_openai_response(response, service="persona_quote.commentary")
             commentary = response.choices[0].message.content.strip()
             return commentary
         except Exception as e:
