@@ -119,6 +119,7 @@ class FirestoreService:
             "description": f"{saying} - {description}",
             "globallyHidden": False,
             "imageUrl": image_url,
+            "imageUrls": [image_url] if image_url else [],
             "isAudioBackgroundFromGallery": False,
             "isLikedByCurrentUser": None,
             "isReportedByCurrentUserStatus": None,

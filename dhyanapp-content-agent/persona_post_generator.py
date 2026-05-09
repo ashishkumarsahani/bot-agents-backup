@@ -759,6 +759,7 @@ Strictly follow the {selected_style['name']} art style."""
             "description": f"{post_data.get('saying', '')} - {post_data.get('description', '')}",
             "globallyHidden": False,
             "imageUrl": image_url,
+            "imageUrls": [image_url] if image_url else [],
             "isAudioBackgroundFromGallery": False,
             "isLikedByCurrentUser": None,
             "isReportedByCurrentUserStatus": None,

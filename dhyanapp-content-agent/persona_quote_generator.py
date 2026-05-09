@@ -923,6 +923,7 @@ Requirements:
             "description": f"{quote_data.get('topic', 'Wisdom')} - {quote_data['attribution']}",
             "globallyHidden": False,
             "imageUrl": image_url,
+            "imageUrls": [image_url] if image_url else [],
             "isAudioBackgroundFromGallery": False,
             "isLikedByCurrentUser": None,
             "isReportedByCurrentUserStatus": None,
