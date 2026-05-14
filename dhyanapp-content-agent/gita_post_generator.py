@@ -488,9 +488,14 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
         takeaway = assets["takeaway"].replace('"', "'")
 
         raw_shloka = (verse.get("verseText") or "").strip()
-        first_line = raw_shloka.split("\n", 1)[0].strip()
-        shloka_snippet = (first_line[:40] + "…") if len(first_line) > 40 else first_line
-        shloka_snippet = shloka_snippet.replace('"', "'")
+        shloka_text = raw_shloka.replace('"', "'")
+
+        translation = (verse.get("translationText") or "").strip()
+        verse_theme = headline
+        if takeaway:
+            verse_theme += f". {takeaway}"
+        if translation:
+            verse_theme += f" ({translation[:160].rstrip()})"
 
         script_phrase = (
             "elegant Devanagari Hindi typography"
@@ -503,26 +508,31 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
             f"\"{style['name']}\" visual style: {style['description']}. "
             f"Color palette: {style['colors']}. "
 
+            f"VERSE THEME for visual imagery: {verse_theme}. "
+            f"All visual elements — background scenes, icons, symbolic illustrations, decorative accents — "
+            f"must directly reflect this specific verse's teaching. "
+            f"Do NOT fall back to generic lotus, Om symbol, or mandala imagery unless they directly relate to this verse. "
+            f"Choose scene, characters, and symbols that are uniquely meaningful for this verse's message. "
+
             f"Create the poster in a clear infographic format, similar to a spiritual flow-chart poster. "
-             f"The content should be divided into visually separated sections/cards/steps, arranged in a clean flow-based layout. "
+            f"The content should be divided into visually separated sections/cards/steps, arranged in a clean flow-based layout. "
             f"Use numbered cards, connected arrows, icons, symbolic illustrations, or circular flow elements to show progression. "
             f"The design should feel informative, structured, and easy to understand at first glance, not just decorative artwork. "
 
-            f"Balance image and text evenly."
-            
+            f"Balance image and text evenly. "
 
             f"On-image text must be minimal, prominent, and readable, rendered in {script_phrase}. "
             f"Include exactly these content elements: "
             f"(1) a small chapter/verse label reading {label}, "
             f"(2) a short headline reading {headline}, "
-            f"(3) one short Sanskrit shloka snippet reading {shloka_snippet}, "
+            f"(3) the full Sanskrit shloka reading {shloka_text}, "
             f"(4) a short takeaway line reading {takeaway}. "
 
             f"Present the meaning in infographic style using visual sections, icons, arrows, or step cards, "
             f"but do not add long paragraphs, bullet lists, comparison tables, captions, or extra labels. "
             f"The poster should look like a premium spiritual infographic poster, not a dense study sheet and not a plain devotional painting. "
 
-            f"Use clear visual hierarchy: small label at top, large headline, readable shloka snippet, and highlighted takeaway. "
+            f"Use clear visual hierarchy: small label at top, large headline, full shloka in a dedicated card, and highlighted takeaway. "
             f"Use subtle dividers, elegant borders, glowing accents, and enough breathing space. "
             f"Keep the layout clean, premium, devotional, meditative, and visually polished. "
 
