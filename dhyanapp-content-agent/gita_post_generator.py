@@ -41,6 +41,8 @@ GITA_ACCOUNT_KEY = "gita"
 GITA_SCRIPTURE_ID = "BhagwadGita"
 GITA_SCRIPTURE_TITLE_FIELD = "BhagwadGita"  # value of scripture_verses.scriptureTitle
 
+KRISHNA_SEARCH_LOOKAHEAD = 10
+
 GITA_IMAGE_MODEL = "gpt-image-2"
 GITA_IMAGE_SIZE = "1024x1024"
 GITA_IMAGE_QUALITY = "medium"
@@ -257,6 +259,8 @@ class GitaVersePostGenerator:
             "last_date": None,
             "last_posted_chapter": 0,
             "last_posted_verse": 0,
+            "last_checked_chapter": 0,
+            "last_checked_verse": 0,
             "next_image_language": "english",
             "last_post_id": None,
             "completed": False,
@@ -413,6 +417,131 @@ Return ONLY valid JSON:
         except Exception as e:
             logger.error(f"[ERROR] Failed to generate post from verse: {e}")
             return None
+
+    def detect_krishna_verses_batch(self, verses: list) -> list:
+        """
+        Single LLM call: send up to KRISHNA_SEARCH_LOOKAHEAD verses and identify which are spoken by Krishna.
+        Returns a list of dicts, one per input verse:
+          [{"index": 0, "chapter": 1, "verse": 1, "speaker": "Sanjaya", "is_krishna_speaking": false, "reason": "..."}, ...]
+        Returns [] on total failure.
+        """
+        if not verses:
+            return []
+
+        verse_blocks = []
+        for i, v in enumerate(verses):
+            ch = v["_chapter_int"]
+            vn = v["_verse_int"]
+            sanskrit = (v.get("verseText") or "").strip()
+            translation = (v.get("translationText") or "").strip()
+            commentary = (v.get("commentary") or "").strip()[:200]
+            verse_blocks.append(
+                f"[{i}] Chapter {ch}, Verse {vn}\n"
+                f"Sanskrit: {sanskrit}\n"
+                f"Translation: {translation}\n"
+                f"Commentary excerpt: {commentary}"
+            )
+
+        prompt = (
+            "You are a Bhagavad Gita scholar. Below are verses from the Bhagavad Gita. "
+            "The Gita has multiple speakers: Lord Krishna, Arjuna, Sanjaya (narrator), "
+            "Dhritarashtra, and occasionally others.\n\n"
+            "For EACH verse, identify who is speaking and whether it is Lord Krishna.\n\n"
+            + "\n\n".join(verse_blocks)
+            + "\n\nReturn ONLY a valid JSON array with one object per verse, in the same order:\n"
+            '[\n'
+            '  {"index": 0, "chapter": <int>, "verse": <int>, "speaker": "<name>", '
+            '"is_krishna_speaking": <true|false>, "reason": "<one sentence>"},\n'
+            "  ...\n"
+            "]"
+        )
+
+        for attempt in range(1, 3):
+            try:
+                response = self.client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "You are a Bhagavad Gita scholar. Always return valid JSON only."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.1,
+                    max_tokens=800,
+                )
+                record_openai_response(response, service="gita_post.detect_speaker_batch")
+                content = response.choices[0].message.content.strip()
+                if content.startswith("```"):
+                    content = content.split("```")[1]
+                    if content.startswith("json"):
+                        content = content[4:]
+                    content = content.strip()
+                return json.loads(content)
+            except Exception as e:
+                logger.warning(f"[SPEAKER-DETECT] Attempt {attempt}/2 failed: {e}")
+
+        logger.error("[SPEAKER-DETECT] All retries exhausted for batch call")
+        return []
+
+    def find_next_krishna_verse(
+        self,
+        after_chapter: int,
+        after_verse: int,
+        max_lookahead: int = KRISHNA_SEARCH_LOOKAHEAD,
+    ) -> tuple:
+        """
+        Search up to max_lookahead verses after (after_chapter, after_verse) in one LLM batch call.
+        Returns (verse_or_None, last_checked_chapter, last_checked_verse).
+        - verse_or_None: first Krishna-spoken verse, or None
+        - last_checked_*: furthest position examined (for state persistence)
+        """
+        verses = self._all_gita_verses_sorted()
+        candidates = [
+            v for v in verses
+            if (v["_chapter_int"], v["_verse_int"]) > (after_chapter, after_verse)
+        ][:max_lookahead]
+
+        if not candidates:
+            logger.info(f"[SEARCH] No verses found after Ch{after_chapter}V{after_verse}")
+            return None, after_chapter, after_verse
+
+        first = candidates[0]
+        last = candidates[-1]
+        last_ch, last_v = last["_chapter_int"], last["_verse_int"]
+        logger.info(
+            f"[SEARCH] Scanning {len(candidates)} verses: "
+            f"Ch{first['_chapter_int']}V{first['_verse_int']} → Ch{last_ch}V{last_v}"
+        )
+
+        results = self.detect_krishna_verses_batch(candidates)
+
+        if not results:
+            logger.warning("[SEARCH] Batch detection failed — no post this run, position unchanged")
+            return None, after_chapter, after_verse
+
+        build_index = {(v["_chapter_int"], v["_verse_int"]): v for v in candidates}
+        first_krishna_verse = None
+        first_krishna_ch, first_krishna_v = None, None
+
+        for entry in results:
+            ch = entry.get("chapter")
+            vn = entry.get("verse")
+            speaker = entry.get("speaker", "Unknown")
+            is_krishna = entry.get("is_krishna_speaking", False)
+            reason = entry.get("reason", "")
+            accepted = "✓ ACCEPTED" if is_krishna else "✗ REJECTED"
+            logger.info(f"[SEARCH] Ch{ch}V{vn} | Speaker: {speaker} | {accepted} | {reason}")
+
+            if is_krishna and first_krishna_verse is None:
+                verse = build_index.get((ch, vn))
+                if verse is not None:
+                    first_krishna_verse = verse
+                    first_krishna_ch, first_krishna_v = ch, vn
+
+        if first_krishna_verse is not None:
+            logger.info(f"[SEARCH] Krishna verse found: Ch{first_krishna_ch}V{first_krishna_v}")
+            return first_krishna_verse, last_ch, last_v
+
+        logger.info(f"[SEARCH] No Krishna verse found in {len(candidates)} candidates. Last checked: Ch{last_ch}V{last_v}")
+        return None, last_ch, last_v
 
     def generate_infographic_assets(self, verse: dict, post_data: dict, image_language: str) -> dict:
         """Produce label/headline/takeaway strings for the infographic in the chosen language."""
@@ -734,7 +863,35 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
             logger.info(f"Already posted today ({today_iso}). Skipping.")
             return None
 
-        return self.generate_and_post(advance_state=True)
+        last_posted_ch = int(self.state.get("last_posted_chapter") or 0)
+        last_posted_v = int(self.state.get("last_posted_verse") or 0)
+        last_checked_ch = int(self.state.get("last_checked_chapter") or last_posted_ch)
+        last_checked_v = int(self.state.get("last_checked_verse") or last_posted_v)
+
+        if (last_checked_ch, last_checked_v) > (last_posted_ch, last_posted_v):
+            search_from_ch, search_from_v = last_checked_ch, last_checked_v
+            logger.info(f"[SEARCH] Resuming from last checked position: Ch{search_from_ch}V{search_from_v}")
+        else:
+            search_from_ch, search_from_v = last_posted_ch, last_posted_v
+            logger.info(f"[SEARCH] Starting from last posted position: Ch{search_from_ch}V{search_from_v}")
+
+        verse, last_ch, last_v = self.find_next_krishna_verse(search_from_ch, search_from_v)
+
+        self.state["last_checked_chapter"] = last_ch
+        self.state["last_checked_verse"] = last_v
+
+        if verse is None:
+            logger.info(
+                f"[SKIP] No Krishna verse found in lookahead. "
+                f"Saving search position Ch{last_ch}V{last_v}. No post today."
+            )
+            self._save_state()
+            return None
+
+        return self.generate_and_post(
+            advance_state=True,
+            override_ch_v=(verse["_chapter_int"], verse["_verse_int"]),
+        )
 
 
 # Singleton
@@ -782,12 +939,18 @@ if __name__ == "__main__":
         print("GITA POST STATE")
         print("=" * 60)
         print(json.dumps(gen.state, indent=2))
-        nxt = gen.get_next_gita_verse()
+        last_posted_ch = int(gen.state.get("last_posted_chapter") or 0)
+        last_posted_v = int(gen.state.get("last_posted_verse") or 0)
+        last_checked_ch = int(gen.state.get("last_checked_chapter") or last_posted_ch)
+        last_checked_v = int(gen.state.get("last_checked_verse") or last_posted_v)
+        print(f"\nLast posted:  Ch{last_posted_ch} V{last_posted_v}")
+        print(f"Last checked: Ch{last_checked_ch} V{last_checked_v}")
+        nxt = gen.get_next_gita_verse(last_checked_ch, last_checked_v)
         if nxt:
-            print(f"\nNext verse to post: Ch{nxt['_chapter_int']} V{nxt['_verse_int']}")
+            print(f"Next search start: Ch{nxt['_chapter_int']} V{nxt['_verse_int']}")
             print(f"Next image language: {gen.state.get('next_image_language')}")
         else:
-            print("\nNo more verses to post (sequence complete).")
+            print("\nNo more verses to search (sequence complete).")
         sys.exit(0)
 
     if args.test or ((args.chapter or args.verse) and not args.advance):
