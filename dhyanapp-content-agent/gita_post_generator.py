@@ -41,7 +41,7 @@ GITA_ACCOUNT_KEY = "gita"
 GITA_SCRIPTURE_ID = "BhagwadGita"
 GITA_SCRIPTURE_TITLE_FIELD = "BhagwadGita"  # value of scripture_verses.scriptureTitle
 
-KRISHNA_SEARCH_LOOKAHEAD = 10
+KRISHNA_SECONDARY_LOOKAHEAD = 10
 
 GITA_IMAGE_MODEL = "gpt-image-2"
 GITA_IMAGE_SIZE = "1024x1024"
@@ -362,6 +362,13 @@ class GitaVersePostGenerator:
         translation_author = (verse.get("translationAuthor") or "Shri Purohit Swami").strip()
         commentary_author = (verse.get("commentaryAuthor") or "Swami Sivananda").strip()
 
+        # deeplink = f"https://dhyanapp.org/scriptureChapterDetails/{GITA_SCRIPTURE_ID}/{chapter}"
+        # deeplink_instruction = f"""
+        # 6. After the contemplative question or devotional closer, add exactly this line on its own:
+        # [Read in App]({deeplink})
+        # Use this markdown link verbatim. Do not modify the URL. Do not add any other links.
+        # """
+
         prompt = f"""You are writing a daily Bhagavad Gita post in the voice of a devoted student of the Gita.
 
 Persona: {persona}
@@ -465,7 +472,7 @@ Return ONLY valid JSON:
                         {"role": "user", "content": prompt},
                     ],
                     temperature=0.1,
-                    max_tokens=800,
+                    max_tokens=2000,
                 )
                 record_openai_response(response, service="gita_post.detect_speaker_batch")
                 content = response.choices[0].message.content.strip()
@@ -485,63 +492,98 @@ Return ONLY valid JSON:
         self,
         after_chapter: int,
         after_verse: int,
-        max_lookahead: int = KRISHNA_SEARCH_LOOKAHEAD,
+        secondary_lookahead: int = KRISHNA_SECONDARY_LOOKAHEAD,
     ) -> tuple:
         """
-        Search up to max_lookahead verses after (after_chapter, after_verse) in one LLM batch call.
-        Returns (verse_or_None, last_checked_chapter, last_checked_verse).
-        - verse_or_None: first Krishna-spoken verse, or None
-        - last_checked_*: furthest position examined (for state persistence)
-        """
-        verses = self._all_gita_verses_sorted()
-        candidates = [
-            v for v in verses
-            if (v["_chapter_int"], v["_verse_int"]) > (after_chapter, after_verse)
-        ][:max_lookahead]
+        Two-stage Krishna search. Returns (verse_to_post, last_checked_chapter, last_checked_verse).
 
-        if not candidates:
+        Stage 1 — check the very next verse individually with LLM:
+          - If Krishna is speaking → post it.
+        Stage 2 — if stage 1 fails or LLM errors, batch-check the next `secondary_lookahead` verses:
+          - If a Krishna verse is found → post it.
+          - If nothing found or LLM fails → post the first verse as fallback.
+        In both stage-2 outcomes last_checked is set to the last verse in the secondary batch
+        so the next day's run starts from verse 11 (not verse 1 again).
+        """
+        all_verses = self._all_gita_verses_sorted()
+        remaining = [
+            v for v in all_verses
+            if (v["_chapter_int"], v["_verse_int"]) > (after_chapter, after_verse)
+        ]
+
+        if not remaining:
             logger.info(f"[SEARCH] No verses found after Ch{after_chapter}V{after_verse}")
             return None, after_chapter, after_verse
 
-        first = candidates[0]
-        last = candidates[-1]
-        last_ch, last_v = last["_chapter_int"], last["_verse_int"]
-        logger.info(
-            f"[SEARCH] Scanning {len(candidates)} verses: "
-            f"Ch{first['_chapter_int']}V{first['_verse_int']} → Ch{last_ch}V{last_v}"
-        )
+        # --- Stage 1: single verse check ---
+        first_verse = remaining[0]
+        first_ch, first_v = first_verse["_chapter_int"], first_verse["_verse_int"]
+        logger.info(f"[SEARCH] Stage 1 — checking Ch{first_ch}V{first_v} individually")
 
-        results = self.detect_krishna_verses_batch(candidates)
+        stage1_results = self.detect_krishna_verses_batch([first_verse])
+        first_verse_is_krishna = False
 
-        if not results:
-            logger.warning("[SEARCH] Batch detection failed — no post this run, position unchanged")
-            return None, after_chapter, after_verse
-
-        build_index = {(v["_chapter_int"], v["_verse_int"]): v for v in candidates}
-        first_krishna_verse = None
-        first_krishna_ch, first_krishna_v = None, None
-
-        for entry in results:
-            ch = entry.get("chapter")
-            vn = entry.get("verse")
+        if stage1_results:
+            entry = stage1_results[0]
             speaker = entry.get("speaker", "Unknown")
             is_krishna = entry.get("is_krishna_speaking", False)
             reason = entry.get("reason", "")
             accepted = "✓ ACCEPTED" if is_krishna else "✗ REJECTED"
-            logger.info(f"[SEARCH] Ch{ch}V{vn} | Speaker: {speaker} | {accepted} | {reason}")
+            logger.info(f"[SEARCH] Ch{first_ch}V{first_v} | Speaker: {speaker} | {accepted} | {reason}")
+            if is_krishna:
+                return first_verse, first_ch, first_v
+            first_verse_is_krishna = False
+        else:
+            logger.warning(f"[SEARCH] Stage 1 LLM call failed for Ch{first_ch}V{first_v}")
 
-            if is_krishna and first_krishna_verse is None:
-                verse = build_index.get((ch, vn))
-                if verse is not None:
-                    first_krishna_verse = verse
-                    first_krishna_ch, first_krishna_v = ch, vn
+        # --- Stage 2: batch-check next `secondary_lookahead` verses ---
+        secondary = remaining[1: 1 + secondary_lookahead]
 
-        if first_krishna_verse is not None:
-            logger.info(f"[SEARCH] Krishna verse found: Ch{first_krishna_ch}V{first_krishna_v}")
-            return first_krishna_verse, last_ch, last_v
+        if not secondary:
+            logger.info(f"[SEARCH] No secondary verses available. Posting Ch{first_ch}V{first_v} as fallback.")
+            return first_verse, first_ch, first_v
 
-        logger.info(f"[SEARCH] No Krishna verse found in {len(candidates)} candidates. Last checked: Ch{last_ch}V{last_v}")
-        return None, last_ch, last_v
+        last_secondary = secondary[-1]
+        last_ch, last_v = last_secondary["_chapter_int"], last_secondary["_verse_int"]
+        logger.info(
+            f"[SEARCH] Stage 2 — batch-checking {len(secondary)} verses: "
+            f"Ch{secondary[0]['_chapter_int']}V{secondary[0]['_verse_int']} → Ch{last_ch}V{last_v}"
+        )
+
+        batch_results = self.detect_krishna_verses_batch(secondary)
+
+        if batch_results:
+            build_index = {(v["_chapter_int"], v["_verse_int"]): v for v in secondary}
+            first_krishna_verse = None
+
+            for entry in batch_results:
+                ch = entry.get("chapter")
+                vn = entry.get("verse")
+                speaker = entry.get("speaker", "Unknown")
+                is_krishna = entry.get("is_krishna_speaking", False)
+                reason = entry.get("reason", "")
+                accepted = "✓ ACCEPTED" if is_krishna else "✗ REJECTED"
+                logger.info(f"[SEARCH] Ch{ch}V{vn} | Speaker: {speaker} | {accepted} | {reason}")
+
+                if is_krishna and first_krishna_verse is None:
+                    verse = build_index.get((ch, vn))
+                    if verse is not None:
+                        first_krishna_verse = verse
+
+            if first_krishna_verse is not None:
+                found_ch = first_krishna_verse["_chapter_int"]
+                found_v = first_krishna_verse["_verse_int"]
+                logger.info(f"[SEARCH] Krishna verse found in Stage 2: Ch{found_ch}V{found_v}. Last checked: Ch{found_ch}V{found_v}")
+                return first_krishna_verse, found_ch, found_v
+        else:
+            logger.warning("[SEARCH] Stage 2 batch LLM call failed")
+
+        # --- Fallback: post first verse, mark secondary range as checked ---
+        logger.info(
+            f"[SEARCH] No Krishna verse found in Stages 1+2. "
+            f"Posting first verse Ch{first_ch}V{first_v} as fallback. Last checked: Ch{last_ch}V{last_v}"
+        )
+        return first_verse, last_ch, last_v
 
     def generate_infographic_assets(self, verse: dict, post_data: dict, image_language: str) -> dict:
         """Produce label/headline/takeaway strings for the infographic in the chosen language."""
