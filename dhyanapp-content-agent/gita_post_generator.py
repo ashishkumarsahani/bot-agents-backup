@@ -41,7 +41,6 @@ GITA_ACCOUNT_KEY = "gita"
 GITA_SCRIPTURE_ID = "BhagwadGita"
 GITA_SCRIPTURE_TITLE_FIELD = "BhagwadGita"  # value of scripture_verses.scriptureTitle
 
-KRISHNA_SECONDARY_LOOKAHEAD = 10
 
 GITA_IMAGE_MODEL = "gpt-image-2"
 GITA_IMAGE_SIZE = "1024x1024"
@@ -362,12 +361,7 @@ class GitaVersePostGenerator:
         translation_author = (verse.get("translationAuthor") or "Shri Purohit Swami").strip()
         commentary_author = (verse.get("commentaryAuthor") or "Swami Sivananda").strip()
 
-        # deeplink = f"https://dhyanapp.org/scriptureChapterDetails/{GITA_SCRIPTURE_ID}/{chapter}"
-        # deeplink_instruction = f"""
-        # 6. After the contemplative question or devotional closer, add exactly this line on its own:
-        # [Read in App]({deeplink})
-        # Use this markdown link verbatim. Do not modify the URL. Do not add any other links.
-        # """
+        deeplink = f"https://dhyanapp.org/scriptureChaptersListScreen/{GITA_SCRIPTURE_ID}"
 
         prompt = f"""You are writing a daily Bhagavad Gita post in the voice of a devoted student of the Gita.
 
@@ -391,7 +385,8 @@ Write the post body in ENGLISH only, 130-200 words, in this exact structure:
 2. The full Devanagari shloka exactly as given above, on its own lines.
 3. The translation rendered in clear modern English, 1-2 sentences. You may smooth the wording but do not change meaning.
 4. A reflection of 3-5 sentences, grounded in the commentary above. Write in first person ("I", "we", "us"). Quietly devotional, never preachy. May reference Krishna or Arjuna by name where natural. Do NOT use cliché phrases like "fast-paced lives", "journey not the destination", or generic self-help framing.
-5. End with a single short contemplative question or a soft devotional closer (one short line). Examples: "Where in my day can I act without grasping?" or "जय श्री कृष्ण.".
+5. End with a single short contemplative question or a soft devotional closer (one short line). Examples: "Where in my day can I act without grasping?" or "जय श्री कृष्ण."
+6. On a new line after the closing, write a natural invitation to read the chapter in the DhyanApp — for example: "Explore this chapter: [Bhagavad Gita Chapter {chapter}]({deeplink})" or "Read this in DhyanApp: [Chapter {chapter} · Bhagavad Gita]({deeplink})". Vary the phrasing naturally. Use the exact URL verbatim: {deeplink}. Do not add any other links.
 
 Do NOT include any IAST or Latin-script transliteration of the Sanskrit. Devanagari shloka and English translation only.
 
@@ -454,6 +449,11 @@ Return ONLY valid JSON:
             "The Gita has multiple speakers: Lord Krishna, Arjuna, Sanjaya (narrator), "
             "Dhritarashtra, and occasionally others.\n\n"
             "For EACH verse, identify who is speaking and whether it is Lord Krishna.\n\n"
+            "CRITICAL RULE: 'is_krishna_speaking' must be true ONLY if Lord Krishna himself "
+            "is the one UTTERING these words as direct speech. If Sanjaya, Arjuna, "
+            "Dhritarashtra, or any narrator is speaking — even if they are describing "
+            "Krishna's actions or quoting him — set is_krishna_speaking to false. "
+            "A verse where Sanjaya says 'Krishna blew his conch' is NOT Krishna speaking.\n\n"
             + "\n\n".join(verse_blocks)
             + "\n\nReturn ONLY a valid JSON array with one object per verse, in the same order:\n"
             '[\n'
@@ -488,102 +488,112 @@ Return ONLY valid JSON:
         logger.error("[SPEAKER-DETECT] All retries exhausted for batch call")
         return []
 
+    def _fetch_verses_after(self, after_chapter: int, after_verse: int, limit: int) -> list:
+        """
+        Fetch up to `limit` verses strictly after (after_chapter, after_verse) using
+        an aggregation pipeline so numeric sort works even when chapterNumber/verseNumber
+        are stored as strings in MongoDB.
+        """
+        if self.db is None:
+            return []
+        try:
+            pipeline = [
+                {"$match": {"scriptureTitle": GITA_SCRIPTURE_TITLE_FIELD}},
+                {"$addFields": {
+                    "_chapter_int": {"$toInt": "$chapterNumber"},
+                    "_verse_int":   {"$toInt": "$verseNumber"},
+                }},
+                {"$match": {"$expr": {"$or": [
+                    {"$gt": ["$_chapter_int", after_chapter]},
+                    {"$and": [
+                        {"$eq": ["$_chapter_int", after_chapter]},
+                        {"$gt": ["$_verse_int", after_verse]},
+                    ]},
+                ]}}},
+                {"$sort": {"_chapter_int": 1, "_verse_int": 1}},
+                {"$limit": limit},
+            ]
+            return list(self.db["scripture_verses"].aggregate(pipeline))
+        except Exception as e:
+            logger.error(f"[FETCH] MongoDB aggregation failed: {e}")
+            return []
+
     def find_next_krishna_verse(
         self,
         after_chapter: int,
         after_verse: int,
-        secondary_lookahead: int = KRISHNA_SECONDARY_LOOKAHEAD,
     ) -> tuple:
         """
-        Two-stage Krishna search. Returns (verse_to_post, last_checked_chapter, last_checked_verse).
-
-        Stage 1 — check the very next verse individually with LLM:
-          - If Krishna is speaking → post it.
-        Stage 2 — if stage 1 fails or LLM errors, batch-check the next `secondary_lookahead` verses:
-          - If a Krishna verse is found → post it.
-          - If nothing found or LLM fails → post the first verse as fallback.
-        In both stage-2 outcomes last_checked is set to the last verse in the secondary batch
-        so the next day's run starts from verse 11 (not verse 1 again).
+        Stage 1: fetch and check the single next verse from DB. If Krishna, return it.
+        Stage 2+: fetch rolling batches of 5 from DB until a Krishna verse is found.
+        Returns (verse_to_post, last_checked_chapter, last_checked_verse).
+        Returns (None, after_chapter, after_verse) if nothing found.
         """
-        all_verses = self._all_gita_verses_sorted()
-        remaining = [
-            v for v in all_verses
-            if (v["_chapter_int"], v["_verse_int"]) > (after_chapter, after_verse)
-        ]
+        BATCH_SIZE = 5
 
-        if not remaining:
+        # Stage 1: check the single next verse
+        first_batch = self._fetch_verses_after(after_chapter, after_verse, limit=1)
+        if not first_batch:
             logger.info(f"[SEARCH] No verses found after Ch{after_chapter}V{after_verse}")
             return None, after_chapter, after_verse
 
-        # --- Stage 1: single verse check ---
-        first_verse = remaining[0]
+        first_verse = first_batch[0]
         first_ch, first_v = first_verse["_chapter_int"], first_verse["_verse_int"]
         logger.info(f"[SEARCH] Stage 1 — checking Ch{first_ch}V{first_v} individually")
-
-        stage1_results = self.detect_krishna_verses_batch([first_verse])
-        first_verse_is_krishna = False
-
-        if stage1_results:
-            entry = stage1_results[0]
+        stage1 = self.detect_krishna_verses_batch([first_verse])
+        if stage1:
+            entry = stage1[0]
             speaker = entry.get("speaker", "Unknown")
-            is_krishna = entry.get("is_krishna_speaking", False)
+            is_krishna_flag = entry.get("is_krishna_speaking", False)
             reason = entry.get("reason", "")
+            is_krishna = is_krishna_flag and "krishna" in speaker.lower()
             accepted = "✓ ACCEPTED" if is_krishna else "✗ REJECTED"
             logger.info(f"[SEARCH] Ch{first_ch}V{first_v} | Speaker: {speaker} | {accepted} | {reason}")
             if is_krishna:
+                logger.info(f"[SEARCH] Krishna verse found in Stage 1: Ch{first_ch}V{first_v}")
                 return first_verse, first_ch, first_v
-            first_verse_is_krishna = False
         else:
             logger.warning(f"[SEARCH] Stage 1 LLM call failed for Ch{first_ch}V{first_v}")
 
-        # --- Stage 2: batch-check next `secondary_lookahead` verses ---
-        secondary = remaining[1: 1 + secondary_lookahead]
+        # Stage 2+: rolling batches of 5, starting after the first verse
+        current_ch, current_v = first_ch, first_v
+        while True:
+            batch = self._fetch_verses_after(current_ch, current_v, limit=BATCH_SIZE)
+            if not batch:
+                break
 
-        if not secondary:
-            logger.info(f"[SEARCH] No secondary verses available. Posting Ch{first_ch}V{first_v} as fallback.")
-            return first_verse, first_ch, first_v
+            start = batch[0]
+            end = batch[-1]
+            last_ch, last_v = end["_chapter_int"], end["_verse_int"]
+            logger.info(
+                f"[SEARCH] Checking batch Ch{start['_chapter_int']}V{start['_verse_int']}"
+                f" → Ch{last_ch}V{last_v}"
+            )
 
-        last_secondary = secondary[-1]
-        last_ch, last_v = last_secondary["_chapter_int"], last_secondary["_verse_int"]
-        logger.info(
-            f"[SEARCH] Stage 2 — batch-checking {len(secondary)} verses: "
-            f"Ch{secondary[0]['_chapter_int']}V{secondary[0]['_verse_int']} → Ch{last_ch}V{last_v}"
-        )
+            results = self.detect_krishna_verses_batch(batch)
+            if results:
+                verse_index = {(v["_chapter_int"], v["_verse_int"]): v for v in batch}
+                for entry in results:
+                    ch = entry.get("chapter")
+                    vn = entry.get("verse")
+                    speaker = entry.get("speaker", "Unknown")
+                    is_krishna_flag = entry.get("is_krishna_speaking", False)
+                    reason = entry.get("reason", "")
+                    is_krishna = is_krishna_flag and "krishna" in speaker.lower()
+                    accepted = "✓ ACCEPTED" if is_krishna else "✗ REJECTED"
+                    logger.info(f"[SEARCH] Ch{ch}V{vn} | Speaker: {speaker} | {accepted} | {reason}")
+                    if is_krishna:
+                        verse = verse_index.get((ch, vn))
+                        if verse:
+                            logger.info(f"[SEARCH] Krishna verse found: Ch{ch}V{vn}")
+                            return verse, ch, vn
+            else:
+                logger.warning(f"[SEARCH] LLM call failed for batch ending Ch{last_ch}V{last_v}")
 
-        batch_results = self.detect_krishna_verses_batch(secondary)
+            current_ch, current_v = last_ch, last_v
 
-        if batch_results:
-            build_index = {(v["_chapter_int"], v["_verse_int"]): v for v in secondary}
-            first_krishna_verse = None
-
-            for entry in batch_results:
-                ch = entry.get("chapter")
-                vn = entry.get("verse")
-                speaker = entry.get("speaker", "Unknown")
-                is_krishna = entry.get("is_krishna_speaking", False)
-                reason = entry.get("reason", "")
-                accepted = "✓ ACCEPTED" if is_krishna else "✗ REJECTED"
-                logger.info(f"[SEARCH] Ch{ch}V{vn} | Speaker: {speaker} | {accepted} | {reason}")
-
-                if is_krishna and first_krishna_verse is None:
-                    verse = build_index.get((ch, vn))
-                    if verse is not None:
-                        first_krishna_verse = verse
-
-            if first_krishna_verse is not None:
-                found_ch = first_krishna_verse["_chapter_int"]
-                found_v = first_krishna_verse["_verse_int"]
-                logger.info(f"[SEARCH] Krishna verse found in Stage 2: Ch{found_ch}V{found_v}. Last checked: Ch{found_ch}V{found_v}")
-                return first_krishna_verse, found_ch, found_v
-        else:
-            logger.warning("[SEARCH] Stage 2 batch LLM call failed")
-
-        # --- Fallback: post first verse, mark secondary range as checked ---
-        logger.info(
-            f"[SEARCH] No Krishna verse found in Stages 1+2. "
-            f"Posting first verse Ch{first_ch}V{first_v} as fallback. Last checked: Ch{last_ch}V{last_v}"
-        )
-        return first_verse, last_ch, last_v
+        logger.info(f"[SEARCH] No Krishna verse found in remaining verses after Ch{after_chapter}V{after_verse}")
+        return None, after_chapter, after_verse
 
     def generate_infographic_assets(self, verse: dict, post_data: dict, image_language: str) -> dict:
         """Produce label/headline/takeaway strings for the infographic in the chosen language."""
