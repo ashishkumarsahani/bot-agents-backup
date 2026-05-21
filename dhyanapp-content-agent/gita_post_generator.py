@@ -672,6 +672,8 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
         shloka_text = raw_shloka.replace('"', "'")
 
         translation = (verse.get("translationText") or "").strip()
+        translation_clean = translation.replace('"', "'")
+
         verse_theme = headline
         if takeaway:
             verse_theme += f". {takeaway}"
@@ -707,13 +709,14 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
             f"(1) a small chapter/verse label reading {label}, "
             f"(2) a short headline reading {headline}, "
             f"(3) the full Sanskrit shloka reading {shloka_text}, "
-            f"(4) a short takeaway line reading {takeaway}. "
+            f"(4) a takeaway line reading {takeaway}, "
+            f"(5) the verse meaning reading {translation_clean}. "
 
             f"Present the meaning in infographic style using visual sections, icons, arrows, or step cards, "
             f"but do not add long paragraphs, bullet lists, comparison tables, captions, or extra labels. "
             f"The poster should look like a premium spiritual infographic poster, not a dense study sheet and not a plain devotional painting. "
 
-            f"Use clear visual hierarchy: small label at top, large headline, full shloka in a dedicated card, and highlighted takeaway. "
+            f"Use clear visual hierarchy: small label at top, large headline, full shloka in a dedicated card, takeaway highlighted, and meaning below. "
             f"Use subtle dividers, elegant borders, glowing accents, and enough breathing space. "
             f"Keep the layout clean, premium, devotional, meditative, and visually polished. "
 
