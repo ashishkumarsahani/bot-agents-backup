@@ -93,7 +93,7 @@ SCRIPTURE_IMAGE_STYLES = [
     # --- Pure infographic layouts: clean structured, sacred feel ---
     {
         "name": "Verse Breakdown Card",
-        "description": "Clean educational infographic with clearly separated sections for original verse, transliteration, meaning, and key insight using elegant dividers and balanced visual hierarchy",
+        "description": "Clean educational infographic with clearly separated sections for original verse, meaning, and key insight using elegant dividers and balanced visual hierarchy",
         "colors": "ivory, saffron, deep blue, antique gold, and charcoal"
     },
     {
@@ -160,6 +160,10 @@ SCRIPTURE_TYPE_CLOSERS = {
     "mantra": ["ॐ", "ॐ शान्तिः शान्तिः शान्तिः", "May this mantra find its home in your heart."],
     "wisdom": ["What does this wisdom ask of me today?", "सत्यमेव जयते", "How can I live this teaching today?"],
 }
+
+def _flip_image_language(lang: str) -> str:
+    return "hindi" if lang == "english" else "english"
+
 
 from bot_personas_store import get_persona
 from pymongo import MongoClient
@@ -292,6 +296,7 @@ class ScripturePostGenerator:
             "last_date": None,
             "last_post_id": None,
             "posted_verse_ids": [],
+            "next_image_language": "english",
         }
 
     def _load_state(self) -> dict:
@@ -506,10 +511,10 @@ Voice: {conv_style}
 
 Today's passage — {section_label}.
 
-Original text:
+Original verse (Devanagari — use this EXACT text, do not substitute):
 {verse_text}
 
-Translation{translation_author_line}:
+English translation (by {translation_author_line if translation_author_line else "the author"}):
 {translation}
 {commentary_block}
 
@@ -519,7 +524,7 @@ Tone instruction: {tone}
 Write the post in ENGLISH, 130–200 words, in this exact structure:
 
 1. Header line on its own: "{section_label}"
-2. The original verse/passage exactly as given above, on its own lines.
+2. The full Devanagari verse exactly as given above under "Original verse (Devanagari)", on its own lines. Do not substitute, modify, or replace it with any other verse from your training data.
 3. The translation in 1–2 clear modern English sentences. Smooth the wording, do not change meaning.
 4. A reflection of 3–5 sentences. Follow the tone instruction above strictly.
    Write in first person.{' Ground reflection in the commentary above.' if commentary else ''}
@@ -572,7 +577,7 @@ Return ONLY valid JSON:
     # ----- infographic assets -----
 
     def generate_infographic_assets(
-        self, verse: dict, post_data: dict, scripture_type: str
+        self, verse: dict, post_data: dict, scripture_type: str, image_language: str = "english"
     ) -> dict:
         """Produce label / headline / takeaway strings for the infographic renderer."""
         scripture_name = (verse.get("scriptureName") or verse.get("_title_clean") or "").strip()
@@ -581,11 +586,23 @@ Return ONLY valid JSON:
         translation = (verse.get("translationText") or "").strip()
         saying = post_data.get("saying", "")
 
-        label_parts = [p for p in [
-            scripture_name,
-            f"Ch. {chapter}" if chapter else "",
-            f"V. {verse_num}" if verse_num else "",
-        ] if p]
+        if image_language == "hindi":
+            lang_instruction = (
+                "All three strings MUST be in Hindi using Devanagari script. "
+                "Do not use English words except digits in the label."
+            )
+            label_parts = [p for p in [
+                scripture_name,
+                f"अध्याय {chapter}" if chapter else "",
+                f"श्लोक {verse_num}" if verse_num else "",
+            ] if p]
+        else:
+            lang_instruction = "All three strings MUST be in clear, simple English."
+            label_parts = [p for p in [
+                scripture_name,
+                f"Ch. {chapter}" if chapter else "",
+                f"V. {verse_num}" if verse_num else "",
+            ] if p]
         label_default = " · ".join(label_parts)
 
         prompt = f"""Prepare text to render onto a scripture infographic poster.
@@ -595,7 +612,7 @@ Scripture type: {scripture_type}
 Translation (reference): {translation}
 Post headline (reference): {saying}
 
-All strings MUST be in clear, simple English.
+{lang_instruction}
 
 Return ONLY valid JSON with exactly these three keys:
 {{
@@ -641,12 +658,22 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
             }
 
     def generate_infographic_prompt(
-        self, verse: dict, assets: dict, scripture_type: str, style: dict
+        self, verse: dict, assets: dict, scripture_type: str, style: dict, image_language: str = "english"
     ) -> str:
         label = assets["label"].replace('"', "'")
         headline = assets["headline"].replace('"', "'")
         takeaway = assets["takeaway"].replace('"', "'")
-        verse_text = (verse.get("verseText") or "").strip().replace('"', "'")
+        import re as _re
+        raw_verse = (verse.get("verseText") or "").strip()
+        # Strip IAST/Latin transliteration lines — keep only Devanagari lines
+        devanagari_lines = [
+            l for l in raw_verse.splitlines()
+            if l.strip() and sum(1 for c in l if 'ऀ' <= c <= 'ॿ') > len(l.strip()) * 0.2
+        ]
+        cleaned = "\n".join(devanagari_lines) if devanagari_lines else raw_verse
+        # Strip embedded verse citation numbers like ।।1.2.17।। or || 28 ||
+        cleaned = _re.sub(r'(\|\|[^|]+\|\||।।[^।]+।।)', '', cleaned).strip()
+        verse_text = cleaned.replace('"', "'")
         translation = (verse.get("translationText") or "").strip().replace('"', "'")
 
         verse_theme = headline
@@ -694,24 +721,26 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
             f"Use icons, symbolic illustrations, or structured cards to show the teaching's structure. "
             f"The design should feel informative, structured, spiritually premium, and easy to read at first glance. "
 
-            f"On-image text must be minimal, prominent, and readable in clean modern English typography. "
+            f"On-image text must be minimal, prominent, and readable in "
+            f"{'elegant Devanagari Hindi typography' if image_language == 'hindi' else 'clean modern English typography'}. "
             f"Include exactly these content elements: "
             f"(1) a small scripture/verse label reading: {label}, "
             f"(2) a short headline reading: {headline}, "
-            f"(3) the original verse text: {verse_text}, "
+            f"(3) the original verse text: {verse_text}. "
             f"(4) a highlighted takeaway line reading: {takeaway}, "
             f"(5) the meaning across the full bottom section reading: {translation}. "
 
             f"LAYOUT RULES: "
-            f"The MEANING (element 5) must occupy the FULL bottom section of the poster — "
-            f"give it generous space, no crowding below it. "
+            f"The MEANING (element 5) spans the full width of the bottom area, centered horizontally. "
+            f"Allocate sufficient vertical height in the bottom section to display the complete meaning text — never clip or truncate it. "
             f"Leave a small clean empty area in the UPPER-RIGHT corner free of text and visual elements "
             f"so a brand logo can be placed there without overlap. "
 
             f"Use clear visual hierarchy: label small at top-left, large headline, "
-            f"verse in a dedicated card, takeaway highlighted, meaning filling the full bottom. "
+            f"verse in a dedicated card, takeaway highlighted, meaning at the bottom full-width centered at natural text size. "
             f"Subtle dividers, elegant borders, glowing accents, breathing space. "
-            f"Spiritual, calm, premium, meditative. No clutter. No extra words."
+            f"Spiritual, calm, premium, meditative. No clutter. No extra words. "
+            f"Do NOT include any transliteration or Latin-script romanization of the verse."
         )
 
     # ----- image -----
@@ -770,6 +799,7 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
         verse: dict,
         scripture_type: str,
         image_style: str,
+        image_language: str = "english",
     ) -> Optional[str]:
         if self.db is None:
             logger.error("[ERROR] MongoDB not connected")
@@ -813,6 +843,7 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
             "_verse": verse.get("verseNumber", ""),
             "_scriptureType": scripture_type,
             "_imageStyle": image_style,
+            "_imageLanguage": image_language,
         }
 
         try:
@@ -830,7 +861,9 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
 
     # ----- orchestration -----
 
-    def generate_and_post(self, *, advance_state: bool = True) -> Optional[str]:
+    def generate_and_post(
+        self, *, advance_state: bool = True, override_image_lang: Optional[str] = None
+    ) -> Optional[str]:
         verse = self._select_random_verse()
         if verse is None:
             logger.error("[ERROR] No verse available to post")
@@ -839,9 +872,10 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
         scripture_title = verse.get("_title_clean", "unknown")
         chapter = verse.get("chapterNumber", "?")
         verse_num = verse.get("verseNumber", "?")
+        image_language = override_image_lang or self.state.get("next_image_language", "english")
 
         logger.info(f"\n{'='*60}")
-        logger.info(f"GENERATING SCRIPTURE POST: {scripture_title} Ch{chapter} V{verse_num}")
+        logger.info(f"GENERATING SCRIPTURE POST: {scripture_title} Ch{chapter} V{verse_num} (image: {image_language})")
         logger.info(f"{'='*60}")
 
         # Level 1: classify at low temperature
@@ -857,13 +891,13 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
 
         post_id = str(uuid.uuid4())
 
-        assets = self.generate_infographic_assets(verse, post_data, scripture_type)
+        assets = self.generate_infographic_assets(verse, post_data, scripture_type, image_language)
         logger.info(f"Infographic headline: {assets.get('headline', '')}")
 
         selected_style = random.choice(SCRIPTURE_IMAGE_STYLES)
         logger.info(f"Image style: {selected_style['name']}")
 
-        image_prompt = self.generate_infographic_prompt(verse, assets, scripture_type, selected_style)
+        image_prompt = self.generate_infographic_prompt(verse, assets, scripture_type, selected_style, image_language)
         logger.info("Generating infographic image...")
         image_url = self.generate_image(image_prompt, post_id)
         if image_url:
@@ -872,7 +906,7 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
             logger.warning("Posting without image")
 
         doc_id = self.push_post_to_db(
-            post_data, image_url, post_id, verse, scripture_type, selected_style["name"]
+            post_data, image_url, post_id, verse, scripture_type, selected_style["name"], image_language
         )
         if not doc_id:
             return None
@@ -880,10 +914,12 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
         if advance_state:
             self.state["last_date"] = date.today().isoformat()
             self.state["last_post_id"] = doc_id
+            self.state["next_image_language"] = _flip_image_language(image_language)
             self.state.setdefault("posted_verse_ids", []).append(str(verse["_id"]))
             self._save_state()
             logger.info(
-                f"State saved. Posted {len(self.state['posted_verse_ids'])} verses so far."
+                f"State saved. Next image language: {self.state['next_image_language']}. "
+                f"Posted {len(self.state['posted_verse_ids'])} verses so far."
             )
 
         logger.info(f"[SUCCESS] Scripture post created: {doc_id}")
@@ -932,6 +968,8 @@ if __name__ == "__main__":
                         help="Insert/update the Aditya Karn persona in bot_personas collection")
     parser.add_argument("--list-scriptures", action="store_true",
                         help="List available non-Gita scriptures and verse counts")
+    parser.add_argument("--image-language", choices=["english", "hindi"],
+                        help="Override infographic language for this run")
 
     args = parser.parse_args()
 
@@ -993,7 +1031,7 @@ if __name__ == "__main__":
 
     if args.test:
         gen = get_scripture_post_generator()
-        post_id = gen.generate_and_post(advance_state=False)
+        post_id = gen.generate_and_post(advance_state=False, override_image_lang=args.image_language)
         if post_id:
             print(f"\n[SUCCESS] Test post created (state NOT advanced): {post_id}")
         else:
