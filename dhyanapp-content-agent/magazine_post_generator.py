@@ -66,56 +66,52 @@ MAGAZINE_CLOSERS = [
     "जय श्री शारदाम्बा",
 ]
 
+# Tattvaloka is a refined PRINT JOURNAL of the Sringeri Sharada Peetham (Advaita
+# Vedanta, Adi Shankara, Goddess Sharada). These styles are IMAGE-LED magazine
+# feature openers: a strong classical illustration carries the page, balanced by a
+# clean, minimal text area (kicker + feature title + one short line) — like a real
+# Tattvaloka article opener. Distinct from the Gita devotional poster and the
+# Scripture folk-art card, and deliberately NOT text-heavy.
 MAGAZINE_IMAGE_STYLES = [
     {
-        "name": "Sringeri Editorial Card",
-        "description": "Classical spiritual-magazine cover feel with an ornate header rule, a clean title band, and structured content panels below in a dignified editorial layout",
-        "colors": "deep maroon, antique gold, ivory, and sandalwood cream",
+        "name": "Cover Illustration Feature",
+        "description": "A slim maroon-and-gold header band at the TOP carries the kicker and feature title; a large, dignified classical illustration of the subject fills the center beneath it — like a Tattvaloka cover/feature opener. Image dominant, text minimal",
+        "colors": "warm cream, deep maroon, antique gold, and soft sepia",
     },
     {
-        "name": "Palm-Leaf Discourse Infographic",
-        "description": "Aged palm-leaf manuscript texture with structured teaching blocks framed by subtle traditional borders, evoking a sacred Sanatana Dharma discourse",
-        "colors": "aged ochre, sepia, deep maroon, faded gold, and charcoal",
+        "name": "Hero Image with Title Header",
+        "description": "A clean header at the TOP holds the kicker and feature title; one serene, painterly devotional illustration fills the center as the hero image, with a slim full-width summary band at the bottom. Balanced like a printed magazine feature",
+        "colors": "ivory, deep maroon, gold leaf, and gentle earth tones",
     },
     {
-        "name": "Advaita Concept Map",
-        "description": "Central idea branching outward into clearly labeled sub-points with elegant connecting lines, ideal for a philosophical teaching laid out as a structured map",
-        "colors": "ivory, indigo, antique gold, sage green, and maroon",
+        "name": "Framed Art Plate",
+        "description": "A painterly art plate of the subject centered within an ornate gold-and-maroon border, the feature title in elegant serif above the plate and one short line below — like a classical magazine art plate. Mostly image",
+        "colors": "antique gold, deep maroon, ivory, and rich painterly tones",
     },
     {
-        "name": "Devotional Story Panel",
-        "description": "Three connected narrative panels with icons and arrows showing the arc of a sacred story or episode in a warm illustrated story-flow layout",
-        "colors": "warm parchment, maroon, saffron, forest green, and earthy brown",
+        "name": "Sringeri Temple Scene",
+        "description": "A serene illustrated scene — the Sringeri Sharada temple by the Tunga river, or a calm sacred setting fitting the subject — as the dominant image, with the feature title in an elegant overlaid band. Atmospheric, image-led",
+        "colors": "soft sandalwood, ivory, muted indigo, antique gold, and maroon",
     },
     {
-        "name": "Subhashita Verse Card",
-        "description": "A single highlighted verse in a dedicated ornate panel with its meaning below, framed like a classical subhashita wisdom card",
-        "colors": "deep maroon, ivory, antique gold, lotus pink, and soft sandalwood",
+        "name": "Deity Portrait Feature",
+        "description": "A refined classical portrait illustration of the relevant deity, sage, or Adi Shankara as the focal image, with a small maroon nameplate kicker and the feature title in serif. Portrait dominant, text sparse",
+        "colors": "deep maroon, gold, ivory, and warm devotional tones",
     },
     {
-        "name": "Temple Gold Teaching Poster",
-        "description": "Gold-leaf borders and jewel-tone panels in Tanjore-inspired richness, with section dividers shaped from divine motifs in an educational poster layout",
-        "colors": "gold, ruby red, deep maroon, royal blue, and ivory",
+        "name": "Lamp-lit Contemplative Feature",
+        "description": "An atmospheric devotional scene lit by oil lamps or soft divine light, evoking the article's mood, with a single elegant serif title and one short line in a calm corner. Mood and image lead, very little text",
+        "colors": "deep indigo, warm amber glow, gold, maroon, and ivory",
     },
     {
-        "name": "Sacred Symbol Explainer",
-        "description": "Built around a central sacred symbol — Om, lotus, or Sharada veena — with meaning-labeled sections radiating outward in a structured spiritual layout",
-        "colors": "deep indigo, gold, cream, burnt orange, and dusty white",
+        "name": "Sacred Symbol Hero",
+        "description": "One large central sacred motif — Om, Goddess Sharada's veena, or a lotus — rendered as elegant focal art, with the feature title beneath in serif and a thin gold rule. Symbol dominant, minimal words",
+        "colors": "ivory, antique gold, deep maroon, lotus white, and muted blue",
     },
     {
-        "name": "Question and Answer Split Panel",
-        "description": "A two-part split layout presenting a seeker's question and the sage's answer with symbolic icons for each voice in a structured sacred dialogue format",
-        "colors": "cream, deep teal, antique gold, maroon, and muted rose",
-    },
-    {
-        "name": "Pillar of Teaching Infographic",
-        "description": "Vertical stacked-block layout with each block holding one principle from the article, like pillars of wisdom building upward in a structured sacred poster",
-        "colors": "sandstone beige, maroon, saffron, ivory, and bronze",
-    },
-    {
-        "name": "Lotus Wisdom Infographic",
-        "description": "Lotus petal layout with each petal holding one key insight from the article, centered on a glowing Om or Sharada emblem in an elegant sacred design",
-        "colors": "rose pink, jade green, ivory, antique gold, and maroon",
+        "name": "Manuscript Art Plate",
+        "description": "An aged-paper page with a single fine painterly illustration of the subject as the centerpiece and a short calligraphic-style serif title; subtle palm-leaf texture at the edges. Balanced art-and-title, not text-filled",
+        "colors": "aged parchment, sepia, deep maroon, faded gold, and ink black",
     },
 ]
 
@@ -523,7 +519,9 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
             data = json.loads(content)
             pts = data.get("key_points") or key_points
             return {
-                "label": data.get("label") or label_default,
+                # label is set deterministically from the real month — the model
+                # tends to hallucinate the date, so we never trust its label.
+                "label": label_default,
                 "headline": data.get("headline") or title,
                 "key_points": [str(p) for p in pts][:3],
                 "takeaway": data.get("takeaway") or description,
@@ -543,73 +541,74 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
         label = assets["label"].replace('"', "'")
         headline = assets["headline"].replace('"', "'")
         takeaway = assets["takeaway"].replace('"', "'")
-        key_points = [p.replace('"', "'") for p in assets.get("key_points", []) if p]
-        points_str = "; ".join(key_points)
         category = (article.get("category") or "article").strip()
 
         theme = headline
         if takeaway:
             theme += f". {takeaway}"
 
-        visual_hints = {
+        scene_hints = {
             "story": (
-                "The background should depict the key moment of the story — characters, setting, action — "
-                "like an illustrated frame from a sacred tale."
+                "Depict the key moment of the story — the characters, setting, and action — as a beautiful, "
+                "dignified classical illustration that fills most of the page."
             ),
             "discourse": (
-                "The background should evoke a sacred teaching setting — soft light, a contemplative space, "
-                "or subtle temple/Sringeri motifs. Dignified and spacious."
+                "Show a serene sacred scene fitting the teaching — a sage or guru in a calm temple or natural setting, "
+                "or the Sringeri Sharada temple by the Tunga river — as a rich, atmospheric illustration."
             ),
             "article": (
-                "The background should evoke the concept clearly — calm sacred space, light, or sacred geometry. "
-                "Contemplative and structured."
+                "Show one strong, evocative classical illustration of the article's central subject "
+                "(the deity, sage, place, or idea) as the dominant image."
             ),
             "subhashita": (
-                "The background should feel like a classical wisdom card — ornate, calm, with a single focal motif."
+                "Show an elegant symbolic illustration of the verse's image (a lamp, lotus, river, or sage) "
+                "as the focal art, calm and refined."
             ),
             "poem": (
-                "The background should feel devotional and lyrical — soft light, lotus, flame, or a divine presence."
+                "Show a soft, lyrical devotional scene evoking the poem's imagery — light, lotus, flame, or the divine — "
+                "as the dominant, atmospheric illustration."
             ),
             "qna": (
-                "The background should suggest a seeker-and-sage dialogue — two presences, calm sacred setting."
+                "Show a serene seeker-and-sage scene as the focal illustration — two figures in calm dialogue "
+                "in a sacred setting."
             ),
         }
-        visual_hint = visual_hints.get(category, visual_hints["article"])
+        scene_hint = scene_hints.get(category, scene_hints["article"])
 
         return (
-            f"A premium square spiritual-magazine infographic poster for Tattvaloka, rendered in the "
-            f"\"{style['name']}\" visual style: {style['description']}. "
+            f"A premium SQUARE magazine feature opener for \"Tattvaloka\", the refined print journal of the Sringeri "
+            f"Sharada Peetham on Advaita Vedanta and Sanatana Dharma, in the \"{style['name']}\" style: {style['description']}. "
             f"Color palette: {style['colors']}. "
 
-            f"ARTICLE THEME for all visual imagery: {theme}. "
-            f"{visual_hint} "
-            f"All visual elements — background, icons, symbolic illustrations, decorative accents — "
-            f"must directly reflect this specific article's subject. "
+            f"BALANCE: this is an IMAGE-LED magazine page — a strong, beautiful classical illustration carries the page, "
+            f"paired with a small, clean text area. Roughly two-thirds image, one-third text. "
+            f"It must feel like a real Tattvaloka article opener — dignified, painterly, and devotional — "
+            f"NOT a flat poster, NOT folk or tribal art, NOT an icon-and-bullet infographic. "
 
-            f"Create the poster in a clear infographic format with visually separated content sections "
-            f"arranged in a structured, flow-based layout. "
-            f"Use icons, symbolic illustrations, or structured cards to show the teaching's structure. "
-            f"The design should feel like a dignified, premium Sanatana Dharma magazine feature — "
-            f"informative, structured, and easy to read at first glance. "
+            f"MAIN ILLUSTRATION (the focal point of the page): {scene_hint} "
+            f"Subject for the illustration: {theme}. "
+            f"Render it richly and elegantly, with classical Indian devotional art sensibility. "
 
-            f"On-image text must be minimal, prominent, and readable in "
-            f"{'elegant Devanagari Hindi typography' if image_language == 'hindi' else 'clean modern English typography'}. "
-            f"Include exactly these content elements: "
-            f"(1) a small magazine label reading: {label}, "
-            f"(2) a prominent headline reading: {headline}, "
-            f"(3) two or three short key-point items reading: {points_str}, "
-            f"(4) a highlighted takeaway line across the bottom reading: {takeaway}. "
+            f"TEXT — render ONLY these few short lines, cleanly, in "
+            f"{'elegant Devanagari Hindi typography' if image_language == 'hindi' else 'an elegant editorial serif typeface'}: "
+            f"(1) a small kicker line reading: {label}, "
+            f"(2) the feature title, large and prominent, reading: {headline}, "
+            f"(3) a summary line at a clearly legible, comfortable reading size (NOT tiny, NOT decorative) "
+            f"reading exactly: {takeaway}. "
+            f"This summary line must be fully readable and never clipped or shrunk into illegibility. "
+            f"Do NOT add any body paragraphs, text columns, drop caps, marginalia, captions, page numbers, "
+            f"or any extra/placeholder/lorem text. Those three lines are the only text. "
 
-            f"LAYOUT RULES: "
-            f"The TAKEAWAY (element 4) spans the full width of the bottom area, centered horizontally. "
-            f"Allocate sufficient vertical height in the bottom section to display the complete takeaway text — never clip or truncate it. "
-            f"Leave a small clean empty area in the UPPER-RIGHT corner free of text and visual elements "
-            f"so a brand logo can be placed there without overlap. "
+            f"LAYOUT (top-to-bottom, like a classical magazine article opener): "
+            f"TOP — a clean header band holding the small kicker (element 1) and, directly below it, the large feature "
+            f"title (element 2), both at the top of the page. "
+            f"MIDDLE — the main illustration sits below the header as the central focal area of the page. "
+            f"BOTTOM — the summary line (element 3) spans the full width of a clean band across the bottom, centered, "
+            f"tall enough to display the complete line comfortably and never clipped. "
+            f"Keep the kicker and title strictly at the TOP and the summary strictly at the BOTTOM. "
+            f"Leave a small clean empty area in the UPPER-RIGHT corner of the header free of text and imagery so a brand logo fits without overlap. "
 
-            f"Use clear visual hierarchy: label small at top-left, large headline, "
-            f"key points as a structured list or cards, takeaway at the bottom full-width centered at natural text size. "
-            f"Subtle dividers, elegant borders, glowing accents, breathing space. "
-            f"Spiritual, calm, premium, meditative. No clutter. No extra words. "
+            f"Overall feel: dignified, painterly, premium, contemplative — a quality spiritual magazine feature. "
             f"Do NOT include any transliteration or Latin-script romanization of Sanskrit."
         )
 
