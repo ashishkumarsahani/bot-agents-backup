@@ -14,16 +14,20 @@ State persisted in magazine_article_state.json beside this script:
 import base64
 import io
 import os
+import re
 import json
 import logging
 import random
 import uuid
 import sys
+import subprocess
+import tempfile
 from datetime import datetime, date
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from typing import Optional
 
+import requests as _requests
 from PIL import Image
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -48,8 +52,28 @@ AUTHOR_BIO = (
     "Tattvaloka is the monthly journal of the Sringeri Sharada Peetham on "
     "Sanatana Dharma, Advaita Vedanta, and Indian culture."
 )
+AUTHOR_BIO_HINDI = (
+    "तत्त्वलोक, श्रृंगेरी शारदा पीठम की मासिक पत्रिका है, जो सनातन धर्म, "
+    "अद्वैत वेदांत और भारतीय संस्कृति पर केंद्रित है।"
+)
+AUTHOR_NAME_HINDI = "ध्यान"
 
 ALLOWED_CATEGORIES = {"article", "discourse", "story", "subhashita", "poem", "qna"}
+
+# Detect garbled PDF font encoding from legacy Indian fonts (Kruti Dev, Shivaji, etc.)
+# Patterns: letter+$+letter (H$m), opening brace+letter ({anw), letter+©, letter+«$
+_GARBLED_PATTERN = re.compile(
+    r'[A-Za-z]\$[A-Za-z]'      # H$m, j_$m style
+    r'|{[a-zA-Z]'               # {anw, {d^m — Kruti Dev brace artifacts
+    r'|[A-Za-z]©'               # B© — combining char artifacts
+    r'|[A-Za-z]«\$'             # H«$mo style
+    r'|grVod|BË`m|VÁOm'         # known specific garbled strings
+)
+
+OPENAI_TTS_VOICE_ENGLISH = "nova"    # warm, smooth — suits spiritual content
+SARVAM_TTS_URL = "https://api.sarvam.ai/text-to-speech"
+SARVAM_TTS_VOICE_HINDI = "aditya"   # natural Indian male voice
+SARVAM_TTS_MODEL = "bulbul:v3"
 
 ARTICLE_IMAGE_MODEL = "gpt-image-2"
 ARTICLE_IMAGE_SIZE = "1024x1536"   # portrait — magazine cover
@@ -155,6 +179,52 @@ def _flip_image_language(lang: str) -> str:
     return "hindi" if lang == "english" else "english"
 
 
+def _sanitize_hindi_text(text: str) -> str:
+    """Remove stray Cyrillic/Greek/other scripts from Hindi text, keep Devanagari + ASCII."""
+    result = []
+    for ch in text:
+        cp = ord(ch)
+        if (0x20 <= cp <= 0x7E) or (0x0900 <= cp <= 0x097F) or cp in (0x200C, 0x200D, 0x0964, 0x0965, 0x0A, 0x0D, 0x09):
+            result.append(ch)
+    return "".join(result)
+
+
+
+def _strip_markdown_for_tts(text: str) -> str:
+    """Remove markdown syntax before sending to TTS."""
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)   # headings
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)                  # bold
+    text = re.sub(r'\*(.+?)\*', r'\1', text)                       # italic
+    text = re.sub(r'^[-*]\s+', '', text, flags=re.MULTILINE)       # bullet lists
+    text = re.sub(r'^\d+\.\s+', '', text, flags=re.MULTILINE)      # numbered lists
+    text = re.sub(r'\n---+\n', '\n', text)                         # hr
+    text = re.sub(r'\n{3,}', '\n\n', text)                        # excess blank lines
+    return text.strip()
+
+
+def _get_audio_duration_ms(audio_bytes: bytes) -> int:
+    """Get duration of MP3 bytes using ffprobe."""
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
+            f.write(audio_bytes)
+            tmp_path = f.name
+        result = subprocess.run(
+            ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', tmp_path],
+            capture_output=True, text=True
+        )
+        data = json.loads(result.stdout)
+        duration_s = float(data['format']['duration'])
+        return int(duration_s * 1000)
+    except Exception as e:
+        logger.warning(f"ffprobe duration failed: {e}")
+        return 0
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
 from bot_personas_store import get_persona
 from pymongo import MongoClient
 from llm_usage_tracker import record_openai_response, record_usage
@@ -220,11 +290,13 @@ class MagazineArticleGenerator:
             self.s3_client = None
 
     def _load_config_from_mongo(self):
+        self.secrets = {}
         self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
         try:
             if self.db is not None:
                 config_doc = self.db["config"].find_one({"_id": "secrets"})
                 if config_doc:
+                    self.secrets = config_doc
                     self.openai_api_key = config_doc.get("OPENAI_API_KEY", self.openai_api_key)
                     logger.info("[SUCCESS] Loaded config from MongoDB")
         except Exception as e:
@@ -324,10 +396,16 @@ class MagazineArticleGenerator:
                 }
             )
             articles = []
+            skipped = 0
             for a in cursor:
                 if not (a.get("body") or a.get("summary")):
                     continue
+                if _GARBLED_PATTERN.search(a.get("body", "")):
+                    skipped += 1
+                    continue
                 articles.append(a)
+            if skipped:
+                logger.info(f"Skipped {skipped} articles with garbled PDF encoding")
             self._articles_cache = articles
             logger.info(f"Loaded {len(articles)} curated Tattvaloka articles from MongoDB")
             return articles
@@ -604,9 +682,10 @@ Keep text short enough to render cleanly on a magazine cover. No quotation marks
             f"MAIN ILLUSTRATION (the focal point): {scene_hint} "
             f"Render it richly and elegantly, with classical Indian devotional art sensibility. "
 
-            f"TEXT — render ONLY these two short lines, cleanly, in {title_typography}: "
-            f"(1) a small kicker line at the very top reading: {label}, "
-            f"(2) the feature title, large and prominent, directly below the kicker, reading: {headline}. "
+            f"TEXT — render EXACTLY these two lines of text, clearly legible, in {title_typography}: "
+            f"(1) The word \"TATTVALOKA\" in small caps or a refined serif, at the very top — this MUST be visible and readable; "
+            f"(2) the feature title in large prominent serif directly below, reading: {headline}. "
+            f"The word TATTVALOKA must appear on the cover — do not omit it. "
             f"Do NOT add any body text, bullet points, key points, summary lines, captions, "
             f"page numbers, or any other text. Only those two lines. "
 
@@ -620,6 +699,323 @@ Keep text short enough to render cleanly on a magazine cover. No quotation marks
             f"magazine cover. "
             f"Do NOT include any transliteration or Latin-script romanization of Sanskrit."
         )
+
+    # ----- Hindi translation -----
+
+    def generate_hindi_content(self, article_data: dict) -> Optional[dict]:
+        """Translate title, sub_title, description and fullText to Hindi using the LLM."""
+        title = article_data.get("title", "")
+        sub_title = article_data.get("sub_title", "")
+        description = article_data.get("description", "")
+        full_text = article_data.get("full_text", "")
+
+        prompt = f"""Translate the following article content into Hindi using ONLY Devanagari script.
+Preserve the Markdown structure exactly (## headings, **bold**, bullet points, numbered lists).
+Do not translate proper nouns, Sanskrit terms, or names — keep them in their original form.
+CRITICAL: Use ONLY Devanagari script for Hindi words. Do NOT use Cyrillic, Greek, or any other non-Latin script. English proper nouns may remain in Latin script.
+
+Title: {title}
+Subtitle: {sub_title}
+Description: {description}
+
+Article body:
+{full_text}
+
+Return ONLY valid JSON:
+{{
+  "title": "Hindi title in Devanagari",
+  "sub_title": "Hindi subtitle in Devanagari",
+  "description": "Hindi description in Devanagari (2-3 sentences)",
+  "full_text": "Hindi Markdown body in Devanagari"
+}}"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a Hindi translator. Translate faithfully preserving Markdown. Return valid JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=2500,
+            )
+            record_openai_response(response, service="magazine_article.hindi_translation")
+            content = response.choices[0].message.content.strip()
+            if content.startswith("```"):
+                content = content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+                content = content.strip()
+            return json.loads(content)
+        except Exception as e:
+            logger.error(f"[ERROR] Hindi translation failed: {e}")
+            return None
+
+    def generate_english_audio(self, text: str) -> Optional[bytes]:
+        """Generate English MP3 using Sarvam bulbul:v3 (aditya, en-IN).
+        Fallback to OpenAI TTS if Sarvam fails after 3 attempts.
+        """
+        import time
+        clean_text = _strip_markdown_for_tts(text)
+        if not clean_text:
+            return None
+
+        sarvam_key = self.secrets.get("SARVAM_API_KEY", os.getenv("SARVAM_API_KEY", ""))
+
+        if sarvam_key:
+            for attempt in range(1, 4):
+                try:
+                    result = self._sarvam_tts_attempt_lang(clean_text, sarvam_key, "en-IN")
+                    if result:
+                        logger.info(f"Sarvam English TTS succeeded on attempt {attempt}")
+                        return result
+                except Exception as e:
+                    logger.warning(f"Sarvam English attempt {attempt}/3 failed: {e}")
+                    if attempt < 3:
+                        time.sleep(5)
+            logger.warning("All 3 Sarvam English attempts failed — falling back to OpenAI TTS")
+        else:
+            logger.warning("SARVAM_API_KEY not found — falling back to OpenAI TTS for English")
+
+        # Fallback: OpenAI TTS
+        try:
+            chunks = []
+            remaining = clean_text
+            while len(remaining) > 4096:
+                idx = remaining.rfind('.', 0, 4096)
+                if idx == -1:
+                    idx = remaining.rfind(' ', 0, 4096)
+                if idx == -1:
+                    idx = 4096
+                chunks.append(remaining[:idx + 1].strip())
+                remaining = remaining[idx + 1:].strip()
+            if remaining:
+                chunks.append(remaining)
+            segments = []
+            for chunk in chunks:
+                response = self.client.audio.speech.create(
+                    model="gpt-4o-mini-tts",
+                    voice=OPENAI_TTS_VOICE_ENGLISH,
+                    input=chunk,
+                    response_format="mp3",
+                )
+                segments.append(response.content)
+            combined = io.BytesIO()
+            for seg in segments:
+                combined.write(seg)
+            logger.info("English audio generated via OpenAI TTS fallback")
+            return combined.getvalue()
+        except Exception as e:
+            logger.error(f"[ERROR] OpenAI English TTS fallback also failed: {e}")
+            return None
+
+    def _sarvam_tts_attempt_lang(self, clean_text: str, sarvam_key: str, lang_code: str) -> Optional[bytes]:
+        """Sarvam TTS for any language code (en-IN, hi-IN, etc.)."""
+        chunks = []
+        remaining = clean_text
+        while len(remaining) > 1500:
+            idx = remaining.rfind('.', 0, 1500)
+            if idx == -1:
+                idx = remaining.rfind(' ', 0, 1500)
+            if idx == -1:
+                idx = 1500
+            chunks.append(remaining[:idx + 1].strip())
+            remaining = remaining[idx + 1:].strip()
+        if remaining:
+            chunks.append(remaining)
+
+        wav_buffers = []
+        for chunk in chunks:
+            resp = _requests.post(
+                SARVAM_TTS_URL,
+                json={
+                    "text": chunk,
+                    "target_language_code": lang_code,
+                    "model": SARVAM_TTS_MODEL,
+                    "speaker": SARVAM_TTS_VOICE_HINDI,
+                    "speech_sample_rate": 22050,
+                    "output_audio_codec": "wav",
+                },
+                headers={
+                    "api-subscription-key": sarvam_key,
+                    "Content-Type": "application/json",
+                },
+                timeout=180,
+            )
+            resp.raise_for_status()
+            for b64 in resp.json().get("audios", []):
+                wav_buffers.append(base64.b64decode(b64))
+
+        if not wav_buffers:
+            return None
+
+        import shutil
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            wav_paths = []
+            for i, wav in enumerate(wav_buffers):
+                p = os.path.join(tmp_dir, f"chunk_{i}.wav")
+                with open(p, "wb") as f:
+                    f.write(wav)
+                wav_paths.append(p)
+            concat_list = os.path.join(tmp_dir, "concat.txt")
+            with open(concat_list, "w") as f:
+                for p in wav_paths:
+                    f.write(f"file '{p}'\n")
+            mp3_path = os.path.join(tmp_dir, "output.mp3")
+            subprocess.run(
+                ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                 "-i", concat_list, "-c:a", "libmp3lame", "-q:a", "2", mp3_path],
+                capture_output=True, check=True,
+            )
+            with open(mp3_path, "rb") as f:
+                return f.read()
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _sarvam_tts_attempt(self, clean_text: str, sarvam_key: str) -> Optional[bytes]:
+        """Single attempt at Sarvam TTS. Returns MP3 bytes or None on failure."""
+        chunks = []
+        remaining = clean_text
+        while len(remaining) > 1500:
+            idx = remaining.rfind('.', 0, 1500)
+            if idx == -1:
+                idx = remaining.rfind(' ', 0, 1500)
+            if idx == -1:
+                idx = 1500
+            chunks.append(remaining[:idx + 1].strip())
+            remaining = remaining[idx + 1:].strip()
+        if remaining:
+            chunks.append(remaining)
+
+        wav_buffers = []
+        for chunk in chunks:
+            resp = _requests.post(
+                SARVAM_TTS_URL,
+                json={
+                    "text": chunk,
+                    "target_language_code": "hi-IN",
+                    "model": SARVAM_TTS_MODEL,
+                    "speaker": SARVAM_TTS_VOICE_HINDI,
+                    "speech_sample_rate": 22050,
+                    "output_audio_codec": "wav",
+                },
+                headers={
+                    "api-subscription-key": sarvam_key,
+                    "Content-Type": "application/json",
+                },
+                timeout=180,
+            )
+            resp.raise_for_status()
+            for b64 in resp.json().get("audios", []):
+                wav_buffers.append(base64.b64decode(b64))
+
+        if not wav_buffers:
+            return None
+
+        # Convert WAV chunks → single MP3 via ffmpeg concat
+        import shutil
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            wav_paths = []
+            for i, wav in enumerate(wav_buffers):
+                p = os.path.join(tmp_dir, f"chunk_{i}.wav")
+                with open(p, "wb") as f:
+                    f.write(wav)
+                wav_paths.append(p)
+
+            concat_list = os.path.join(tmp_dir, "concat.txt")
+            with open(concat_list, "w") as f:
+                for p in wav_paths:
+                    f.write(f"file '{p}'\n")
+
+            mp3_path = os.path.join(tmp_dir, "output.mp3")
+            subprocess.run(
+                ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                 "-i", concat_list, "-c:a", "libmp3lame", "-q:a", "2", mp3_path],
+                capture_output=True, check=True,
+            )
+            with open(mp3_path, "rb") as f:
+                return f.read()
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def generate_hindi_audio(self, text: str) -> Optional[bytes]:
+        """Generate Hindi MP3.
+        Primary: Sarvam bulbul:v3 (aditya) — 3 attempts with 5s waits.
+        Fallback: OpenAI TTS (nova) if all Sarvam attempts fail.
+        """
+        import time
+        clean_text = _strip_markdown_for_tts(text)
+        if not clean_text:
+            return None
+
+        sarvam_key = self.secrets.get("SARVAM_API_KEY", os.getenv("SARVAM_API_KEY", ""))
+
+        if sarvam_key:
+            for attempt in range(1, 4):
+                try:
+                    result = self._sarvam_tts_attempt_lang(clean_text, sarvam_key, "hi-IN")
+                    if result:
+                        logger.info(f"Sarvam Hindi TTS succeeded on attempt {attempt}")
+                        return result
+                except Exception as e:
+                    logger.warning(f"Sarvam attempt {attempt}/3 failed: {e}")
+                    if attempt < 3:
+                        time.sleep(5)
+            logger.warning("All 3 Sarvam attempts failed — falling back to OpenAI TTS for Hindi")
+        else:
+            logger.warning("SARVAM_API_KEY not found — falling back to OpenAI TTS for Hindi")
+
+        # Fallback: OpenAI TTS
+        try:
+            chunks = []
+            remaining = clean_text
+            while len(remaining) > 4096:
+                idx = remaining.rfind('.', 0, 4096)
+                if idx == -1:
+                    idx = remaining.rfind(' ', 0, 4096)
+                if idx == -1:
+                    idx = 4096
+                chunks.append(remaining[:idx + 1].strip())
+                remaining = remaining[idx + 1:].strip()
+            if remaining:
+                chunks.append(remaining)
+
+            segments = []
+            for chunk in chunks:
+                response = self.client.audio.speech.create(
+                    model="gpt-4o-mini-tts",
+                    voice=OPENAI_TTS_VOICE_ENGLISH,
+                    input=chunk,
+                    response_format="mp3",
+                )
+                segments.append(response.content)
+            combined = io.BytesIO()
+            for seg in segments:
+                combined.write(seg)
+            logger.info("Hindi audio generated via OpenAI TTS fallback")
+            return combined.getvalue()
+        except Exception as e:
+            logger.error(f"[ERROR] OpenAI Hindi TTS fallback also failed: {e}")
+            return None
+
+    def upload_audio(self, audio_bytes: bytes, object_key: str) -> Optional[str]:
+        """Upload MP3 bytes to MinIO and return public URL."""
+        if not self.s3_client:
+            return None
+        try:
+            self.s3_client.put_object(
+                Bucket=MINIO_BUCKET,
+                Key=object_key,
+                Body=audio_bytes,
+                ContentType="audio/mpeg",
+            )
+            base_url = MINIO_PUBLIC_URL if MINIO_PUBLIC_URL else f"http://{MINIO_ENDPOINT}"
+            return f"{base_url}/{MINIO_BUCKET}/{object_key}"
+        except Exception as e:
+            logger.error(f"[ERROR] Audio upload failed: {e}")
+            return None
 
     # ----- image -----
 
@@ -677,6 +1073,10 @@ Keep text short enough to render cleanly on a magazine cover. No quotation marks
         source_article: dict,
         image_style: str,
         image_language: str = "english",
+        hindi_data: Optional[dict] = None,
+        english_audio_url: Optional[str] = None,
+        english_duration_ms: int = 0,
+        hindi_audio_url: Optional[str] = None,
     ) -> Optional[str]:
         if self.db is None:
             logger.error("[ERROR] MongoDB not connected")
@@ -687,12 +1087,56 @@ Keep text short enough to render cleanly on a magazine cover. No quotation marks
         full_text = article_data.get("full_text") or ""
         created_at_ms = int(datetime.now(IST).timestamp() * 1000)
 
+        # Prepend Tattvaloka attribution to article body
+        attribution_line = f"**Tattvaloka — {month}**" if month else "**Tattvaloka**"
+        full_text = f"{attribution_line}\n\n{full_text}"
+
+        # Build alternateAudio, alternateText, alternateTitle
+        alternate_audio = {}
+        alternate_text = {}
+        alternate_title = {}
+
+        if english_audio_url:
+            alternate_audio["English"] = english_audio_url
+        alternate_text["English"] = full_text
+        alternate_title["English"] = article_data.get("title", "")
+
+        if hindi_data:
+            if hindi_audio_url:
+                alternate_audio["Hindi"] = hindi_audio_url
+            if hindi_data.get("full_text"):
+                alternate_text["Hindi"] = hindi_data["full_text"]
+            if hindi_data.get("title"):
+                alternate_title["Hindi"] = hindi_data["title"]
+
+        # Localized maps — English + Hindi only
+        en_title = article_data.get("title", "")
+        hi_title = (hindi_data or {}).get("title", "")
+        en_subtitle = f"Tattvaloka · {month} · {category.capitalize()}" if month else f"Tattvaloka · {category.capitalize()}"
+        hi_subtitle = (hindi_data or {}).get("sub_title", en_subtitle)
+        en_desc = article_data.get("description", "")
+        hi_desc = (hindi_data or {}).get("description", "")
+
+        primary_titles = {"English": en_title}
+        sub_titles = {"English": en_subtitle}
+        short_descriptions = {"English": en_desc}
+        original_author_names = {"English": AUTHOR_NAME, "Hindi": AUTHOR_NAME_HINDI}
+        sound_artist_names = {"English": AUTHOR_NAME, "Hindi": AUTHOR_NAME_HINDI}
+        author_short_bios = {"English": AUTHOR_BIO, "Hindi": AUTHOR_BIO_HINDI}
+
+        if hi_title:
+            primary_titles["Hindi"] = hi_title
+        if hi_subtitle:
+            sub_titles["Hindi"] = hi_subtitle
+        if hi_desc:
+            short_descriptions["Hindi"] = hi_desc
+
         doc = {
             "_id": article_id,
             "selfID": article_id,
-            "primaryTitle": article_data.get("title", ""),
-            "subTitle": f"{month} · {category.capitalize()}" if month else category.capitalize(),
-            "shortDescription": article_data.get("description", ""),
+            "primaryTitle": en_title,
+            "subTitle": en_subtitle,   # e.g. "Tattvaloka · July 2025 · Article"
+            "shortDescription": en_desc,
             "fullText": full_text,
             "teaserImageURL": image_url or "",
             "backgroundImageURL": image_url or "",
@@ -702,34 +1146,35 @@ Keep text short enough to render cleanly on a magazine cover. No quotation marks
             "AuthorShortBio": AUTHOR_BIO,
             "soundArtistName": AUTHOR_NAME,
             "ArticleCategory": "Spirituality",
+            "articleType": "original",
+            "primaryLanguage": "English",
             "tags": source_article.get("tags") or [],
             "multiMediaType": "originalTextArticle",
             "uploadedBy": UPLOADED_BY,
             "creator_id": DHYANI_USER_ID,
             "wordCount": len(full_text.split()),
             "AIGeneratedText": True,
-            "AIGeneratedAudio": False,
+            "AIGeneratedAudio": bool(english_audio_url),
             "availableOnWebsite": True,
             "availableOnPhone": True,
             "availableOnWatch": False,
-            "audioURL": "",
+            "audioURL": english_audio_url or "",
+            "audioLengthMilliSeconds": english_duration_ms,
             "videoURL": "",
-            "audioLengthMilliSeconds": 0,
             "backgroundMusicSupported": [],
+            "alternateAudio": alternate_audio,
+            "alternateText": alternate_text,
+            "alternateTitle": alternate_title,
+            "primaryTitles": primary_titles,
+            "subTitles": sub_titles,
+            "shortDescriptions": short_descriptions,
+            "originalAuthorNames": original_author_names,
+            "soundArtistNames": sound_artist_names,
+            "authorShortBios": author_short_bios,
             "creationTimeEpoch": created_at_ms,
             "likedBy": [],
             "replayedBy": [],
             "premiumSettings": "general",
-            # Bot metadata
-            "_botGenerated": True,
-            "_generatorType": "magazine_article",
-            "_magazineSlug": MAGAZINE_SLUG,
-            "_magazineMonth": month,
-            "_magazineCategory": category,
-            "_articleId": str(source_article.get("_id", "")),
-            "_issueId": str(source_article.get("issueId", "")),
-            "_imageLanguage": image_language,
-            "_imageStyle": image_style,
         }
 
         try:
@@ -784,8 +1229,47 @@ Keep text short enough to render cleanly on a magazine cover. No quotation marks
         else:
             logger.warning("Publishing article without image")
 
+        # ----- Hindi translation -----
+        logger.info("Generating Hindi translation...")
+        hindi_data = self.generate_hindi_content(article_data)
+        if hindi_data:
+            logger.info("Hindi translation done")
+        else:
+            logger.warning("Hindi translation failed — continuing without Hindi content")
+
+        # ----- Audio generation -----
+        logger.info("Generating English audio (OpenAI nova)...")
+        english_audio = self.generate_english_audio(article_data.get("full_text", ""))
+        english_audio_url = None
+        english_duration_ms = 0
+        if english_audio:
+            english_audio_url = self.upload_audio(
+                english_audio, f"Knowledge/ArticleBot/{article_id}/audio.mp3"
+            )
+            english_duration_ms = _get_audio_duration_ms(english_audio)
+            logger.info(f"English audio: {english_duration_ms}ms")
+        else:
+            logger.warning("English audio generation failed")
+
+        hindi_audio_url = None
+        if hindi_data and hindi_data.get("full_text"):
+            logger.info("Generating Hindi audio (Sarvam bulbul:v3 aditya)...")
+            hindi_audio = self.generate_hindi_audio(_sanitize_hindi_text(hindi_data["full_text"]))
+            if hindi_audio:
+                hindi_audio_url = self.upload_audio(
+                    hindi_audio, f"Knowledge/ArticleBot/{article_id}/Hindi.mp3"
+                )
+                logger.info("Hindi audio uploaded")
+            else:
+                logger.warning("Hindi audio generation failed")
+
         doc_id = self.push_article_to_db(
-            article_data, image_url, article_id, source_article, selected_style["name"], image_language
+            article_data, image_url, article_id, source_article,
+            selected_style["name"], image_language,
+            hindi_data=hindi_data,
+            english_audio_url=english_audio_url,
+            english_duration_ms=english_duration_ms,
+            hindi_audio_url=hindi_audio_url,
         )
         if not doc_id:
             return None
