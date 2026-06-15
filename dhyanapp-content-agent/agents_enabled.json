@@ -1,0 +1,11 @@
+{
+  "persona-quote-bot": true,
+  "persona-post-bot": true,
+  "gita-post-bot": true,
+  "scripture-post-bot": true,
+  "youtube-post-bot": true,
+  "magazine-article-bot": true,
+  "magazine-post-bot": true,
+  "festival-post-bot": true,
+  "daily-quote-bot": true
+}

@@ -1,12 +1,27 @@
 #!/usr/bin/env python3
 """List all DhyanApp agents — bot agents, event agents, and trigger services."""
 
+import json
 import subprocess
 import os
 from datetime import datetime
+from pathlib import Path
+
+ENABLED_STATE_FILE = Path("/home/admin/bot_agents/dhyanapp-content-agent/agents_enabled.json")
+
+
+def load_enabled_state():
+    try:
+        if ENABLED_STATE_FILE.exists():
+            with open(ENABLED_STATE_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
 
 AGENTS = [
     {
+        "id": "persona-quote-bot",
         "name": "Persona Quote Bot",
         "description": "Generates daily spiritual quotes with images from rotating bot personas",
         "script": "/home/admin/bot_agents/dhyanapp-content-agent/persona_quote_generator.py",
@@ -15,11 +30,30 @@ AGENTS = [
         "type": "cron",
     },
     {
+        "id": "persona-post-bot",
         "name": "Persona Post Bot",
         "description": "Generates daily spiritual posts with AI images from rotating bot personas",
         "script": "/home/admin/bot_agents/dhyanapp-content-agent/persona_post_generator.py",
         "cron": "30 12 * * * (6:00 PM IST daily)",
         "log": "/home/admin/bot_agents/dhyanapp-content-agent/post_cron.log",
+        "type": "cron",
+    },
+    {
+        "id": "gita-post-bot",
+        "name": "Bhagavad Gita Post Bot",
+        "description": "Posts one Krishna-spoken verse per day with AI infographic images",
+        "script": "/home/admin/bot_agents/dhyanapp-content-agent/gita_post_generator.py",
+        "cron": "0 7 * * * (7:00 AM IST daily)",
+        "log": "/home/admin/bot_agents/dhyanapp-content-agent/gita_cron.log",
+        "type": "cron",
+    },
+    {
+        "id": "scripture-post-bot",
+        "name": "Scripture Post Bot (Aditya Karn)",
+        "description": "Posts from non-Gita Hindu scriptures on alternate days with tone-matched reflections",
+        "script": "/home/admin/bot_agents/dhyanapp-content-agent/scripture_post_generator.py",
+        "cron": "0 8 * * * (8:00 AM IST, alternate-day logic)",
+        "log": "/home/admin/bot_agents/dhyanapp-content-agent/scripture_cron.log",
         "type": "cron",
     },
     {
@@ -108,6 +142,8 @@ def main():
     print(f"  DHYANAPP AGENTS STATUS — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'=' * 70}\n")
 
+    enabled_state = load_enabled_state()
+
     for i, agent in enumerate(AGENTS, 1):
         # Determine status
         if agent["type"] in ("service", "trigger"):
@@ -118,9 +154,13 @@ def main():
             else:
                 status = "\033[91mSTOPPED\033[0m"
         else:
-            # Cron job — check if script exists and log is recent
+            # Cron job — check enabled state, script existence
+            agent_id = agent.get("id")
+            is_enabled = enabled_state.get(agent_id, True) if agent_id else True
             script_exists = os.path.exists(agent["script"])
-            if not script_exists:
+            if not is_enabled:
+                status = "\033[91mDISABLED\033[0m"
+            elif not script_exists:
                 status = "\033[91mSCRIPT MISSING\033[0m"
             else:
                 status = "\033[93mCRON SCHEDULED\033[0m"
