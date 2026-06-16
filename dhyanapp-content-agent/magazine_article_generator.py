@@ -1274,6 +1274,17 @@ Return ONLY valid JSON:
         if not doc_id:
             return None
 
+        try:
+            self.db["latest_content"].insert_one({
+                "_id": doc_id,
+                "contentId": doc_id,
+                "contentType": "ARTICLES",
+                "timeOfAddition": int(datetime.now().timestamp() * 1000),
+            })
+            logger.info(f"[latest_content] Entry created for article {doc_id}")
+        except Exception as e:
+            logger.warning(f"[latest_content] Insert failed (non-fatal): {e}")
+
         if advance_state:
             self.state["last_date"] = date.today().isoformat()
             self.state["last_article_id"] = doc_id
