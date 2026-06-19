@@ -44,10 +44,11 @@ IST = ZoneInfo("Asia/Kolkata")
 STATE_FILE = Path(__file__).parent / "magazine_article_state.json"
 MAGAZINE_SLUG = "tattvaloka"
 
-DHYANI_USER_ID = "7es9AYnaW7afNtMeOBtXl8Z2ILF3"
-UPLOADED_BY = "Dhyani"
-AUTHOR_NAME = "Dhyan"
-AUTHOR_PROFILE_IMAGE_URL = "https://storage.dhyanapp.org/dhyanapp-recordings/avatars/DhyanApp_User_Profile_Icon_7.svg"
+# Posts are attached to the Tattvaloka creator profile (creator_profiles._id / selfId).
+CREATOR_ID = "30JNWvp12Wxk4V8KfDBA"
+UPLOADED_BY = "Tattvaloka"
+AUTHOR_NAME = "Tattvaloka"
+AUTHOR_PROFILE_IMAGE_URL = "https://storage.dhyanapp.org/dhyanapp-recordings/creator-profiles/30JNWvp12Wxk4V8KfDBA.jpg"
 AUTHOR_BIO = (
     "Tattvaloka is the monthly journal of the Sringeri Sharada Peetham on "
     "Sanatana Dharma, Advaita Vedanta, and Indian culture."
@@ -56,7 +57,7 @@ AUTHOR_BIO_HINDI = (
     "तत्त्वलोक, श्रृंगेरी शारदा पीठम की मासिक पत्रिका है, जो सनातन धर्म, "
     "अद्वैत वेदांत और भारतीय संस्कृति पर केंद्रित है।"
 )
-AUTHOR_NAME_HINDI = "ध्यान"
+AUTHOR_NAME_HINDI = "तत्त्वलोक"
 
 ALLOWED_CATEGORIES = {"article", "discourse", "story", "subhashita", "poem", "qna"}
 
@@ -1151,7 +1152,7 @@ Return ONLY valid JSON:
             "tags": source_article.get("tags") or [],
             "multiMediaType": "originalTextArticle",
             "uploadedBy": UPLOADED_BY,
-            "creator_id": DHYANI_USER_ID,
+            "creator_id": CREATOR_ID,
             "wordCount": len(full_text.split()),
             "AIGeneratedText": True,
             "AIGeneratedAudio": bool(english_audio_url),
