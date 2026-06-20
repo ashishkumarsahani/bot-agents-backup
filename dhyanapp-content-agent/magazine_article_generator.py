@@ -44,9 +44,10 @@ IST = ZoneInfo("Asia/Kolkata")
 STATE_FILE = Path(__file__).parent / "magazine_article_state.json"
 MAGAZINE_SLUG = "tattvaloka"
 
-# Posts are attached to the Tattvaloka creator profile (creator_profiles._id / selfId).
-CREATOR_ID = "30JNWvp12Wxk4V8KfDBA"
-UPLOADED_BY = "Tattvaloka"
+# Posts are attached to the magazine's creator profile, resolved at runtime from
+# creator_profiles by magazineSlug (see _load_creator_profile). These are only
+# fallbacks used if the DB lookup fails.
+CREATOR_ID_FALLBACK = "30JNWvp12Wxk4V8KfDBA"
 AUTHOR_NAME = "Tattvaloka"
 AUTHOR_PROFILE_IMAGE_URL = "https://storage.dhyanapp.org/dhyanapp-recordings/creator-profiles/30JNWvp12Wxk4V8KfDBA.jpg"
 AUTHOR_BIO = (
@@ -254,6 +255,7 @@ class MagazineArticleGenerator:
         self._initialize_mongodb()
         self._initialize_minio()
         self._load_config_from_mongo()
+        self._load_creator_profile()
         self.client = OpenAI(api_key=self.openai_api_key)
         self._load_watermark_logo()
         self._articles_cache: Optional[list] = None
@@ -302,6 +304,36 @@ class MagazineArticleGenerator:
                     logger.info("[SUCCESS] Loaded config from MongoDB")
         except Exception as e:
             logger.error(f"[ERROR] Failed to load config from MongoDB: {e}")
+
+    def _load_creator_profile(self):
+        """Resolve the magazine's creator profile from DB by magazineSlug.
+
+        Articles are attached to this creator via creator_id. Falls back to the
+        module-level constants only if the lookup fails.
+        """
+        self.creator_id = CREATOR_ID_FALLBACK
+        self.author_name = AUTHOR_NAME
+        self.author_profile_image_url = AUTHOR_PROFILE_IMAGE_URL
+        try:
+            if self.db is not None:
+                prof = self.db["creator_profiles"].find_one({"magazineSlug": MAGAZINE_SLUG})
+                if prof:
+                    self.creator_id = prof.get("selfId") or prof.get("_id") or self.creator_id
+                    self.author_name = prof.get("name") or self.author_name
+                    self.author_profile_image_url = (
+                        prof.get("profileImageUrl") or self.author_profile_image_url
+                    )
+                    logger.info(
+                        f"[creator] Resolved magazineSlug='{MAGAZINE_SLUG}' -> "
+                        f"{self.creator_id} ({self.author_name})"
+                    )
+                else:
+                    logger.warning(
+                        f"[creator] No creator_profiles for magazineSlug='{MAGAZINE_SLUG}', "
+                        f"using fallback {self.creator_id}"
+                    )
+        except Exception as e:
+            logger.warning(f"[creator] Lookup failed, using fallback {self.creator_id}: {e}")
 
     def _load_watermark_logo(self):
         try:
@@ -1121,8 +1153,8 @@ Return ONLY valid JSON:
         primary_titles = {"English": en_title}
         sub_titles = {"English": en_subtitle}
         short_descriptions = {"English": en_desc}
-        original_author_names = {"English": AUTHOR_NAME, "Hindi": AUTHOR_NAME_HINDI}
-        sound_artist_names = {"English": AUTHOR_NAME, "Hindi": AUTHOR_NAME_HINDI}
+        original_author_names = {"English": self.author_name, "Hindi": AUTHOR_NAME_HINDI}
+        sound_artist_names = {"English": self.author_name, "Hindi": AUTHOR_NAME_HINDI}
         author_short_bios = {"English": AUTHOR_BIO, "Hindi": AUTHOR_BIO_HINDI}
 
         if hi_title:
@@ -1141,18 +1173,18 @@ Return ONLY valid JSON:
             "fullText": full_text,
             "teaserImageURL": image_url or "",
             "backgroundImageURL": image_url or "",
-            "originalAuthorName": AUTHOR_NAME,
+            "originalAuthorName": self.author_name,
             "originalAuthorURL": "",
-            "AuthorProfileImageURL": AUTHOR_PROFILE_IMAGE_URL,
+            "AuthorProfileImageURL": self.author_profile_image_url,
             "AuthorShortBio": AUTHOR_BIO,
-            "soundArtistName": AUTHOR_NAME,
+            "soundArtistName": self.author_name,
             "ArticleCategory": "Spirituality",
             "articleType": "original",
             "primaryLanguage": "English",
             "tags": source_article.get("tags") or [],
             "multiMediaType": "originalTextArticle",
-            "uploadedBy": UPLOADED_BY,
-            "creator_id": CREATOR_ID,
+            "uploadedBy": self.author_name,
+            "creator_id": self.creator_id,
             "wordCount": len(full_text.split()),
             "AIGeneratedText": True,
             "AIGeneratedAudio": bool(english_audio_url),
