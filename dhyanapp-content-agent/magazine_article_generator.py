@@ -42,23 +42,49 @@ logger = logging.getLogger(__name__)
 
 IST = ZoneInfo("Asia/Kolkata")
 STATE_FILE = Path(__file__).parent / "magazine_article_state.json"
-MAGAZINE_SLUG = "tattvaloka"
 
-# Posts are attached to the magazine's creator profile, resolved at runtime from
-# creator_profiles by magazineSlug (see _load_creator_profile). These are only
-# fallbacks used if the DB lookup fails.
-CREATOR_ID_FALLBACK = "30JNWvp12Wxk4V8KfDBA"
-AUTHOR_NAME = "Tattvaloka"
-AUTHOR_PROFILE_IMAGE_URL = "https://storage.dhyanapp.org/dhyanapp-recordings/creator-profiles/30JNWvp12Wxk4V8KfDBA.jpg"
-AUTHOR_BIO = (
-    "Tattvaloka is the monthly journal of the Sringeri Sharada Peetham on "
-    "Sanatana Dharma, Advaita Vedanta, and Indian culture."
-)
-AUTHOR_BIO_HINDI = (
-    "तत्त्वलोक, श्रृंगेरी शारदा पीठम की मासिक पत्रिका है, जो सनातन धर्म, "
-    "अद्वैत वेदांत और भारतीय संस्कृति पर केंद्रित है।"
-)
-AUTHOR_NAME_HINDI = "तत्त्वलोक"
+MAGAZINE_ROTATION = ["tattvaloka", "vedanta-kesari"]
+
+MAGAZINES = {
+    "tattvaloka": {
+        "slug": "tattvaloka",
+        "name": "Tattvaloka",
+        "name_hindi": "तत्त्वलोक",
+        "bio": (
+            "Tattvaloka is the monthly journal of the Sringeri Sharada Peetham on "
+            "Sanatana Dharma, Advaita Vedanta, and Indian culture."
+        ),
+        "bio_hindi": (
+            "तत्त्वलोक, श्रृंगेरी शारदा पीठम की मासिक पत्रिका है, जो सनातन धर्म, "
+            "अद्वैत वेदांत और भारतीय संस्कृति पर केंद्रित है।"
+        ),
+        "cover_journal_desc": (
+            "the refined print journal of the Sringeri Sharada Peetham on Advaita Vedanta "
+            "and Sanatana Dharma"
+        ),
+        "creator_id_fallback": "30JNWvp12Wxk4V8KfDBA",
+        "profile_image_url_fallback": "https://storage.dhyanapp.org/dhyanapp-recordings/creator-profiles/30JNWvp12Wxk4V8KfDBA.jpg",
+    },
+    "vedanta-kesari": {
+        "slug": "vedanta-kesari",
+        "name": "Vedanta Kesari",
+        "name_hindi": "वेदान्त केसरी",
+        "bio": (
+            "Vedanta Kesari is the monthly journal of Sri Ramakrishna Math on "
+            "Vedanta, Indian culture, and spiritual wisdom."
+        ),
+        "bio_hindi": (
+            "वेदान्त केसरी, श्री रामकृष्ण मठ की मासिक पत्रिका है, जो वेदांत, "
+            "भारतीय संस्कृति और आध्यात्मिक ज्ञान पर केंद्रित है।"
+        ),
+        "cover_journal_desc": (
+            "the monthly journal of Sri Ramakrishna Math on Vedanta, Indian culture, "
+            "and spiritual wisdom"
+        ),
+        "creator_id_fallback": "7144ff02f4844d58b657b49df660",
+        "profile_image_url_fallback": "https://storage.dhyanapp.org/dhyanapp-recordings/creator-profiles/7144ff02f4844d58b657b49df660.png",
+    },
+}
 
 ALLOWED_CATEGORIES = {"article", "discourse", "story", "subhashita", "poem", "qna"}
 
@@ -77,6 +103,7 @@ SARVAM_TTS_URL = "https://api.sarvam.ai/text-to-speech"
 SARVAM_TTS_VOICE_HINDI = "aditya"   # natural Indian male voice
 SARVAM_TTS_MODEL = "bulbul:v3"
 
+DHYANAPP_SERVICES_URL = "https://services.dhyanapp.org"
 ARTICLE_IMAGE_MODEL = "gpt-image-2"
 ARTICLE_IMAGE_SIZE = "1024x1536"   # portrait — magazine cover
 ARTICLE_IMAGE_QUALITY = "medium"
@@ -100,7 +127,7 @@ COVER_IMAGE_STYLES = [
             "illustration fills roughly two-thirds of the frame. A slim maroon-and-gold header "
             "band at the very TOP carries the kicker line and feature title in elegant serif. "
             "Below the header the illustration flows to the bottom edge. Image-dominant, "
-            "minimal text — like a premium Tattvaloka cover."
+            "minimal text — like a premium spiritual magazine cover."
         ),
         "colors": "warm cream, deep maroon, antique gold, and soft sepia",
     },
@@ -248,17 +275,17 @@ MINIO_PUBLIC_URL = os.getenv("MINIO_PUBLIC_URL", "https://storage.dhyanapp.org")
 
 
 class MagazineArticleGenerator:
-    """Generates articles from Tattvaloka magazine content, posting on alternate days."""
+    """Generates articles from Tattvaloka and Vedanta Kesari, alternating every day."""
 
     def __init__(self):
         self.state = self._load_state()
         self._initialize_mongodb()
         self._initialize_minio()
         self._load_config_from_mongo()
-        self._load_creator_profile()
         self.client = OpenAI(api_key=self.openai_api_key)
+        self.services_password = self.secrets.get("SERVICES_PASSWORD", "")
         self._load_watermark_logo()
-        self._articles_cache: Optional[list] = None
+        self._articles_cache: dict = {}
 
     # ----- init helpers -----
 
@@ -305,18 +332,15 @@ class MagazineArticleGenerator:
         except Exception as e:
             logger.error(f"[ERROR] Failed to load config from MongoDB: {e}")
 
-    def _load_creator_profile(self):
-        """Resolve the magazine's creator profile from DB by magazineSlug.
-
-        Articles are attached to this creator via creator_id. Falls back to the
-        module-level constants only if the lookup fails.
-        """
-        self.creator_id = CREATOR_ID_FALLBACK
-        self.author_name = AUTHOR_NAME
-        self.author_profile_image_url = AUTHOR_PROFILE_IMAGE_URL
+    def _load_creator_profile(self, magazine_slug: str):
+        """Resolve the magazine's creator profile from DB by magazineSlug."""
+        mag = MAGAZINES[magazine_slug]
+        self.creator_id = mag["creator_id_fallback"]
+        self.author_name = mag["name"]
+        self.author_profile_image_url = mag["profile_image_url_fallback"]
         try:
             if self.db is not None:
-                prof = self.db["creator_profiles"].find_one({"magazineSlug": MAGAZINE_SLUG})
+                prof = self.db["creator_profiles"].find_one({"magazineSlug": magazine_slug})
                 if prof:
                     self.creator_id = prof.get("selfId") or prof.get("_id") or self.creator_id
                     self.author_name = prof.get("name") or self.author_name
@@ -324,12 +348,12 @@ class MagazineArticleGenerator:
                         prof.get("profileImageUrl") or self.author_profile_image_url
                     )
                     logger.info(
-                        f"[creator] Resolved magazineSlug='{MAGAZINE_SLUG}' -> "
+                        f"[creator] Resolved magazineSlug='{magazine_slug}' -> "
                         f"{self.creator_id} ({self.author_name})"
                     )
                 else:
                     logger.warning(
-                        f"[creator] No creator_profiles for magazineSlug='{MAGAZINE_SLUG}', "
+                        f"[creator] No creator_profiles for magazineSlug='{magazine_slug}', "
                         f"using fallback {self.creator_id}"
                     )
         except Exception as e:
@@ -372,7 +396,9 @@ class MagazineArticleGenerator:
         return {
             "last_date": None,
             "last_article_id": None,
-            "posted_article_ids": [],
+            "posted_article_ids_tattvaloka": [],
+            "posted_article_ids_vedanta-kesari": [],
+            "next_magazine": "tattvaloka",
             "next_image_language": "english",
         }
 
@@ -383,6 +409,9 @@ class MagazineArticleGenerator:
                     loaded = json.load(f)
                 merged = self._default_state()
                 merged.update(loaded)
+                # Migrate legacy posted_article_ids into tattvaloka bucket
+                if "posted_article_ids" in merged:
+                    merged["posted_article_ids_tattvaloka"] = merged.pop("posted_article_ids")
                 return merged
         except Exception as e:
             logger.error(f"[ERROR] Failed to load state: {e}")
@@ -407,24 +436,21 @@ class MagazineArticleGenerator:
             if days_since == 0:
                 logger.info("Already posted today. Skipping.")
                 return False
-            if days_since == 1:
-                logger.info("Rest day (alternate-day schedule). Skipping.")
-                return False
             return True
         except Exception:
             return True
 
     # ----- article selection -----
 
-    def _get_all_articles(self) -> list:
-        if self._articles_cache is not None:
-            return self._articles_cache
+    def _get_all_articles(self, magazine_slug: str) -> list:
+        if magazine_slug in self._articles_cache:
+            return self._articles_cache[magazine_slug]
         if self.db is None:
             return []
         try:
             cursor = self.db["source_magazine_articles"].find(
                 {
-                    "magazineSlug": MAGAZINE_SLUG,
+                    "magazineSlug": magazine_slug,
                     "category": {"$in": list(ALLOWED_CATEGORIES)},
                 }
             )
@@ -439,24 +465,25 @@ class MagazineArticleGenerator:
                 articles.append(a)
             if skipped:
                 logger.info(f"Skipped {skipped} articles with garbled PDF encoding")
-            self._articles_cache = articles
-            logger.info(f"Loaded {len(articles)} curated Tattvaloka articles from MongoDB")
+            self._articles_cache[magazine_slug] = articles
+            logger.info(f"Loaded {len(articles)} curated {MAGAZINES[magazine_slug]['name']} articles from MongoDB")
             return articles
         except Exception as e:
             logger.error(f"[ERROR] Failed to load magazine articles: {e}")
             return []
 
-    def _select_random_article(self) -> Optional[dict]:
-        all_articles = self._get_all_articles()
+    def _select_random_article(self, magazine_slug: str) -> Optional[dict]:
+        all_articles = self._get_all_articles(magazine_slug)
         if not all_articles:
             return None
 
-        posted_ids = set(str(a) for a in self.state.get("posted_article_ids", []))
+        state_key = f"posted_article_ids_{magazine_slug}"
+        posted_ids = set(str(a) for a in self.state.get(state_key, []))
         available = [a for a in all_articles if str(a["_id"]) not in posted_ids]
 
         if not available:
-            logger.info("[POOL] All articles posted. Resetting posted list.")
-            self.state["posted_article_ids"] = []
+            logger.info(f"[POOL] All {MAGAZINES[magazine_slug]['name']} articles posted. Resetting posted list.")
+            self.state[state_key] = []
             self._save_state()
             available = all_articles
 
@@ -469,11 +496,12 @@ class MagazineArticleGenerator:
 
     # ----- LLM: generate article from source -----
 
-    def generate_article_from_source(self, article: dict) -> Optional[dict]:
+    def generate_article_from_source(self, article: dict, magazine_config: dict) -> Optional[dict]:
         """
-        Distil a Tattvaloka source article into a long-form Markdown article
+        Distil a magazine source article into a long-form Markdown article
         with an explanatory title, subtitle, short description, and full body.
         """
+        magazine_name = magazine_config["name"]
         title = (article.get("title") or "").strip()
         author = (article.get("author") or "").strip()
         category = (article.get("category") or "article").strip()
@@ -515,11 +543,11 @@ class MagazineArticleGenerator:
             ),
         }
         guidance = category_guidance.get(category, category_guidance["article"])
-        attribution = f"From Tattvaloka, {month}" if month else "From Tattvaloka"
+        attribution = f"From {magazine_name}, {month}" if month else f"From {magazine_name}"
         if author:
             attribution += f" — {author}"
 
-        prompt = f"""You are writing a long-form article for DhyanApp based on a Tattvaloka magazine piece.
+        prompt = f"""You are writing a long-form article for DhyanApp based on a {magazine_name} magazine piece.
 
 Source article:
 Original title: {title}
@@ -561,7 +589,7 @@ Return ONLY valid JSON:
                     {
                         "role": "system",
                         "content": (
-                            "You are a writer for DhyanApp, adapting Tattvaloka magazine articles "
+                            f"You are a writer for DhyanApp, adapting {magazine_name} magazine articles "
                             "into clear, faithful long-form pieces. Always return valid JSON."
                         ),
                     },
@@ -585,7 +613,7 @@ Return ONLY valid JSON:
             if not (data.get("description") or "").strip():
                 data["description"] = summary[:200].rstrip() if summary else data["title"]
             if not (data.get("sub_title") or "").strip():
-                data["sub_title"] = f"From the Tattvaloka {month} edition" if month else "From Tattvaloka"
+                data["sub_title"] = f"From the {magazine_name} {month} edition" if month else f"From {magazine_name}"
             return data
         except Exception as e:
             logger.error(f"[ERROR] Failed to generate article: {e}")
@@ -594,9 +622,14 @@ Return ONLY valid JSON:
     # ----- cover image assets -----
 
     def generate_cover_assets(
-        self, article: dict, article_data: dict, image_language: str = "english"
+        self, article: dict, article_data: dict, image_language: str = "english",
+        magazine_config: dict = None
     ) -> dict:
         """Produce label / headline / sub_title strings for the cover image."""
+        if magazine_config is None:
+            magazine_config = MAGAZINES["tattvaloka"]
+        magazine_name = magazine_config["name"]
+        magazine_name_hindi = magazine_config["name_hindi"]
         month = (article.get("month") or "").strip()
         category = (article.get("category") or "article").strip()
         title = article_data.get("title") or article.get("title") or ""
@@ -607,12 +640,12 @@ Return ONLY valid JSON:
                 "All strings MUST be in Hindi using Devanagari script. "
                 "Do not use English words except digits."
             )
-            label_default = f"तत्त्वलोक · {month}" if month else "तत्त्वलोक"
+            label_default = f"{magazine_name_hindi} · {month}" if month else magazine_name_hindi
         else:
             lang_instruction = "All strings MUST be in clear, simple English."
-            label_default = f"Tattvaloka · {month}" if month else "Tattvaloka"
+            label_default = f"{magazine_name} · {month}" if month else magazine_name
 
-        prompt = f"""Prepare cover text for a Tattvaloka magazine cover image.
+        prompt = f"""Prepare cover text for a {magazine_name} magazine cover image.
 
 Article title (reference): {title}
 Category: {category}
@@ -661,8 +694,14 @@ Keep text short enough to render cleanly on a magazine cover. No quotation marks
             }
 
     def generate_cover_prompt(
-        self, article: dict, assets: dict, style: dict, image_language: str = "english"
+        self, article: dict, assets: dict, style: dict, image_language: str = "english",
+        magazine_config: dict = None
     ) -> str:
+        if magazine_config is None:
+            magazine_config = MAGAZINES["tattvaloka"]
+        magazine_name = magazine_config["name"]
+        magazine_name_upper = magazine_name.upper()
+        journal_desc = magazine_config["cover_journal_desc"]
         label = assets["label"].replace('"', "'")
         headline = assets["headline"].replace('"', "'")
         category = (article.get("category") or "article").strip()
@@ -700,15 +739,14 @@ Keep text short enough to render cleanly on a magazine cover. No quotation marks
         )
 
         return (
-            f"A premium PORTRAIT magazine cover for \"Tattvaloka\", the refined print journal "
-            f"of the Sringeri Sharada Peetham on Advaita Vedanta and Sanatana Dharma, "
+            f"A premium PORTRAIT magazine cover for \"{magazine_name}\", {journal_desc}, "
             f"in the \"{style['name']}\" style: {style['description']} "
             f"Color palette: {style['colors']}. "
 
             f"BALANCE: this is a PORTRAIT cover — tall format, image-dominant. "
             f"A strong, beautiful classical Indian devotional illustration fills roughly "
             f"two-thirds to three-quarters of the frame. "
-            f"It must feel like a real Tattvaloka magazine cover — dignified, painterly, "
+            f"It must feel like a real {magazine_name} magazine cover — dignified, painterly, "
             f"devotional — NOT a flat infographic, NOT folk or tribal art, NOT a poster with "
             f"bullet points or text columns. "
 
@@ -716,9 +754,9 @@ Keep text short enough to render cleanly on a magazine cover. No quotation marks
             f"Render it richly and elegantly, with classical Indian devotional art sensibility. "
 
             f"TEXT — render EXACTLY these two lines of text, clearly legible, in {title_typography}: "
-            f"(1) The word \"TATTVALOKA\" in small caps or a refined serif, at the very top — this MUST be visible and readable; "
+            f"(1) The word \"{magazine_name_upper}\" in small caps or a refined serif, at the very top — this MUST be visible and readable; "
             f"(2) the feature title in large prominent serif directly below, reading: {headline}. "
-            f"The word TATTVALOKA must appear on the cover — do not omit it. "
+            f"The word {magazine_name_upper} must appear on the cover — do not omit it. "
             f"Do NOT add any body text, bullet points, key points, summary lines, captions, "
             f"page numbers, or any other text. Only those two lines. "
 
@@ -1056,30 +1094,20 @@ Return ONLY valid JSON:
         if not self.s3_client:
             logger.error("[ERROR] MinIO not initialized")
             return None
+        if not self.services_password:
+            logger.error("[ERROR] SERVICES_PASSWORD not available")
+            return None
         try:
-            response = self.client.images.generate(
-                model=ARTICLE_IMAGE_MODEL,
-                prompt=prompt,
-                size=ARTICLE_IMAGE_SIZE,
-                quality=ARTICLE_IMAGE_QUALITY,
-                n=1,
+            response = _requests.post(
+                f"{DHYANAPP_SERVICES_URL}/image_1/generate",
+                json={"prompt": prompt, "password": self.services_password, "size": "portrait", "quality": "medium"},
+                timeout=120,
             )
-            _img_price = {"low": 0.02, "medium": 0.07, "high": 0.28}
-            try:
-                record_usage(
-                    "openai", ARTICLE_IMAGE_MODEL, "magazine_article.generate_image",
-                    images=1,
-                    cost_usd=_img_price.get(ARTICLE_IMAGE_QUALITY, 0.07),
-                    meta={"size": ARTICLE_IMAGE_SIZE, "quality": ARTICLE_IMAGE_QUALITY},
-                )
-            except Exception as track_err:
-                logger.warning(f"Failed to record image usage: {track_err}")
+            if response.status_code != 200:
+                logger.error(f"[ERROR] Image generation failed: {response.status_code} - {response.text[:200]}")
+                return None
 
-            raw_bytes = base64.b64decode(response.data[0].b64_json)
-            image = Image.open(io.BytesIO(raw_bytes))
-            image = self._apply_watermark_top_right(image)
-            buf = io.BytesIO()
-            image.save(buf, format="WEBP", lossless=True)
+            buf = io.BytesIO(response.content)
 
             object_key = f"Knowledge/ArticleBot/{article_id}/poster_image.webp"
             self.s3_client.put_object(
@@ -1096,6 +1124,7 @@ Return ONLY valid JSON:
             logger.error(f"[ERROR] Failed to generate/upload image: {e}")
             return None
 
+
     # ----- DB write -----
 
     def push_article_to_db(
@@ -1110,18 +1139,21 @@ Return ONLY valid JSON:
         english_audio_url: Optional[str] = None,
         english_duration_ms: int = 0,
         hindi_audio_url: Optional[str] = None,
+        magazine_config: dict = None,
     ) -> Optional[str]:
         if self.db is None:
             logger.error("[ERROR] MongoDB not connected")
             return None
+        if magazine_config is None:
+            magazine_config = MAGAZINES["tattvaloka"]
+        magazine_name = magazine_config["name"]
 
         month = (source_article.get("month") or "").strip()
         category = (source_article.get("category") or "article").strip()
         full_text = article_data.get("full_text") or ""
         created_at_ms = int(datetime.now(IST).timestamp() * 1000)
 
-        # Prepend Tattvaloka attribution to article body
-        attribution_line = f"**Tattvaloka — {month}**" if month else "**Tattvaloka**"
+        attribution_line = f"**{magazine_name} — {month}**" if month else f"**{magazine_name}**"
         full_text = f"{attribution_line}\n\n{full_text}"
 
         # Build alternateAudio, alternateText, alternateTitle
@@ -1145,7 +1177,7 @@ Return ONLY valid JSON:
         # Localized maps — English + Hindi only
         en_title = article_data.get("title", "")
         hi_title = (hindi_data or {}).get("title", "")
-        en_subtitle = f"Tattvaloka · {month} · {category.capitalize()}" if month else f"Tattvaloka · {category.capitalize()}"
+        en_subtitle = f"{magazine_name} · {month} · {category.capitalize()}" if month else f"{magazine_name} · {category.capitalize()}"
         hi_subtitle = (hindi_data or {}).get("sub_title", en_subtitle)
         en_desc = article_data.get("description", "")
         hi_desc = (hindi_data or {}).get("description", "")
@@ -1153,9 +1185,9 @@ Return ONLY valid JSON:
         primary_titles = {"English": en_title}
         sub_titles = {"English": en_subtitle}
         short_descriptions = {"English": en_desc}
-        original_author_names = {"English": self.author_name, "Hindi": AUTHOR_NAME_HINDI}
-        sound_artist_names = {"English": self.author_name, "Hindi": AUTHOR_NAME_HINDI}
-        author_short_bios = {"English": AUTHOR_BIO, "Hindi": AUTHOR_BIO_HINDI}
+        original_author_names = {"English": self.author_name, "Hindi": magazine_config["name_hindi"]}
+        sound_artist_names = {"English": self.author_name, "Hindi": magazine_config["name_hindi"]}
+        author_short_bios = {"English": magazine_config["bio"], "Hindi": magazine_config["bio_hindi"]}
 
         if hi_title:
             primary_titles["Hindi"] = hi_title
@@ -1176,7 +1208,7 @@ Return ONLY valid JSON:
             "originalAuthorName": self.author_name,
             "originalAuthorURL": "",
             "AuthorProfileImageURL": self.author_profile_image_url,
-            "AuthorShortBio": AUTHOR_BIO,
+            "AuthorShortBio": magazine_config["bio"],
             "soundArtistName": self.author_name,
             "ArticleCategory": "Spirituality",
             "articleType": "original",
@@ -1225,11 +1257,16 @@ Return ONLY valid JSON:
     # ----- orchestration -----
 
     def generate_and_publish(
-        self, *, advance_state: bool = True, override_image_lang: Optional[str] = None
+        self, *, advance_state: bool = True, override_image_lang: Optional[str] = None,
+        magazine_slug: Optional[str] = None
     ) -> Optional[str]:
-        source_article = self._select_random_article()
+        magazine_slug = magazine_slug or self.state.get("next_magazine", "tattvaloka")
+        magazine_config = MAGAZINES[magazine_slug]
+        self._load_creator_profile(magazine_slug)
+
+        source_article = self._select_random_article(magazine_slug)
         if source_article is None:
-            logger.error("[ERROR] No article available")
+            logger.error(f"[ERROR] No article available for {magazine_config['name']}")
             return None
 
         category = source_article.get("category", "?")
@@ -1237,10 +1274,10 @@ Return ONLY valid JSON:
         image_language = override_image_lang or self.state.get("next_image_language", "english")
 
         logger.info(f"\n{'='*60}")
-        logger.info(f"GENERATING TATTVALOKA ARTICLE: [{category}] {source_article.get('title')} ({month}) (image: {image_language})")
+        logger.info(f"GENERATING {magazine_config['name'].upper()} ARTICLE: [{category}] {source_article.get('title')} ({month}) (image: {image_language})")
         logger.info(f"{'='*60}")
 
-        article_data = self.generate_article_from_source(source_article)
+        article_data = self.generate_article_from_source(source_article, magazine_config)
         if not article_data:
             logger.error("Failed to generate article content")
             return None
@@ -1248,13 +1285,13 @@ Return ONLY valid JSON:
 
         article_id = str(uuid.uuid4())
 
-        assets = self.generate_cover_assets(source_article, article_data, image_language)
+        assets = self.generate_cover_assets(source_article, article_data, image_language, magazine_config)
         logger.info(f"Cover headline: {assets.get('headline', '')}")
 
         selected_style = random.choice(COVER_IMAGE_STYLES)
         logger.info(f"Cover style: {selected_style['name']}")
 
-        image_prompt = self.generate_cover_prompt(source_article, assets, selected_style, image_language)
+        image_prompt = self.generate_cover_prompt(source_article, assets, selected_style, image_language, magazine_config)
         logger.info("Generating cover image...")
         image_url = self.generate_image(image_prompt, article_id)
         if image_url:
@@ -1303,6 +1340,7 @@ Return ONLY valid JSON:
             english_audio_url=english_audio_url,
             english_duration_ms=english_duration_ms,
             hindi_audio_url=hindi_audio_url,
+            magazine_config=magazine_config,
         )
         if not doc_id:
             return None
@@ -1322,11 +1360,15 @@ Return ONLY valid JSON:
             self.state["last_date"] = date.today().isoformat()
             self.state["last_article_id"] = doc_id
             self.state["next_image_language"] = _flip_image_language(image_language)
-            self.state.setdefault("posted_article_ids", []).append(str(source_article["_id"]))
+            state_key = f"posted_article_ids_{magazine_slug}"
+            self.state.setdefault(state_key, []).append(str(source_article["_id"]))
+            current_idx = MAGAZINE_ROTATION.index(magazine_slug)
+            self.state["next_magazine"] = MAGAZINE_ROTATION[(current_idx + 1) % len(MAGAZINE_ROTATION)]
             self._save_state()
             logger.info(
-                f"State saved. Next image language: {self.state['next_image_language']}. "
-                f"Published {len(self.state['posted_article_ids'])} articles so far."
+                f"State saved. Next magazine: {self.state['next_magazine']}. "
+                f"Next image language: {self.state['next_image_language']}. "
+                f"Published {len(self.state[state_key])} {magazine_config['name']} articles so far."
             )
 
         logger.info(f"[SUCCESS] Article created: {doc_id}")
@@ -1335,9 +1377,10 @@ Return ONLY valid JSON:
     def run_daily(self) -> Optional[str]:
         today_iso = date.today().isoformat()
         logger.info("=" * 60)
-        logger.info("TATTVALOKA MAGAZINE ARTICLE GENERATOR")
+        logger.info("MAGAZINE ARTICLE GENERATOR (Tattvaloka / Vedanta Kesari)")
         logger.info(f"Date: {today_iso}")
         logger.info(f"Time: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}")
+        logger.info(f"Next magazine: {self.state.get('next_magazine', 'tattvaloka')}")
         logger.info("=" * 60)
 
         if not self._should_post_today():
@@ -1360,9 +1403,9 @@ def get_magazine_article_generator() -> MagazineArticleGenerator:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Tattvaloka Magazine Article Generator")
+    parser = argparse.ArgumentParser(description="Magazine Article Generator (Tattvaloka / Vedanta Kesari)")
     parser.add_argument("--run-now", action="store_true",
-                        help="Run daily publish (respects alternate-day schedule)")
+                        help="Run daily publish (posts every day, alternates magazine)")
     parser.add_argument("--test", action="store_true",
                         help="Generate one article without advancing state")
     parser.add_argument("--show-state", action="store_true",
@@ -1372,7 +1415,7 @@ if __name__ == "__main__":
     parser.add_argument("--yes-i-am-sure", action="store_true",
                         help="Confirm --reset-state")
     parser.add_argument("--list-articles", action="store_true",
-                        help="List available curated Tattvaloka articles by category")
+                        help="List available articles by magazine and category")
     parser.add_argument("--image-language", choices=["english", "hindi"],
                         help="Override cover image language for this run")
 
@@ -1385,7 +1428,9 @@ if __name__ == "__main__":
         state = {
             "last_date": None,
             "last_article_id": None,
-            "posted_article_ids": [],
+            "posted_article_ids_tattvaloka": [],
+            "posted_article_ids_vedanta-kesari": [],
+            "next_magazine": "tattvaloka",
             "next_image_language": "english",
         }
         with open(STATE_FILE, "w") as f:
@@ -1399,12 +1444,15 @@ if __name__ == "__main__":
                 with open(STATE_FILE) as f:
                     state = json.load(f)
                 print("\n" + "=" * 60)
-                print("TATTVALOKA MAGAZINE ARTICLE STATE")
+                print("MAGAZINE ARTICLE GENERATOR STATE")
                 print("=" * 60)
-                print(f"Last date:          {state.get('last_date')}")
-                print(f"Last article ID:    {state.get('last_article_id')}")
-                print(f"Articles published: {len(state.get('posted_article_ids', []))}")
-                print(f"Next image lang:    {state.get('next_image_language')}")
+                print(f"Last date:                  {state.get('last_date')}")
+                print(f"Last article ID:            {state.get('last_article_id')}")
+                print(f"Next magazine:              {state.get('next_magazine')}")
+                print(f"Next image lang:            {state.get('next_image_language')}")
+                for slug in MAGAZINE_ROTATION:
+                    key = f"posted_article_ids_{slug}"
+                    print(f"Articles ({slug}): {len(state.get(key, []))}")
             else:
                 print("No state file found.")
         except Exception as e:
@@ -1414,20 +1462,21 @@ if __name__ == "__main__":
     if args.list_articles:
         client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
         db = client["dhyanapp"]
-        pipeline = [
-            {"$match": {"magazineSlug": MAGAZINE_SLUG, "category": {"$in": list(ALLOWED_CATEGORIES)}}},
-            {"$group": {"_id": "$category", "count": {"$sum": 1}}},
-            {"$sort": {"count": -1}},
-        ]
-        print("\nAvailable Tattvaloka articles (curated categories):")
-        print(f"{'Category':<20} {'Count':>7}")
-        print("-" * 30)
-        total = 0
-        for doc in db["source_magazine_articles"].aggregate(pipeline):
-            print(f"{str(doc['_id']):<20} {doc['count']:>7}")
-            total += doc["count"]
-        print("-" * 30)
-        print(f"{'TOTAL':<20} {total:>7}")
+        for slug in MAGAZINE_ROTATION:
+            pipeline = [
+                {"$match": {"magazineSlug": slug, "category": {"$in": list(ALLOWED_CATEGORIES)}}},
+                {"$group": {"_id": "$category", "count": {"$sum": 1}}},
+                {"$sort": {"count": -1}},
+            ]
+            print(f"\nAvailable {MAGAZINES[slug]['name']} articles (curated categories):")
+            print(f"{'Category':<20} {'Count':>7}")
+            print("-" * 30)
+            total = 0
+            for doc in db["source_magazine_articles"].aggregate(pipeline):
+                print(f"{str(doc['_id']):<20} {doc['count']:>7}")
+                total += doc["count"]
+            print("-" * 30)
+            print(f"{'TOTAL':<20} {total:>7}")
         sys.exit(0)
 
     if args.test:

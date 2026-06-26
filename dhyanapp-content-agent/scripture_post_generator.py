@@ -22,6 +22,7 @@ import random
 import uuid
 import sys
 import urllib.parse
+import requests
 from datetime import datetime, date
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -44,6 +45,7 @@ STATE_FILE = Path(__file__).parent / "scripture_post_state.json"
 SCRIPTURE_ACCOUNT_KEY = "adityakarn"
 SCRIPTURE_BOT_USER_ID = "UQqox6yuW5f8mylYoImiHwSxPm52"
 
+DHYANAPP_SERVICES_URL = "https://services.dhyanapp.org"
 SCRIPTURE_IMAGE_MODEL = "gpt-image-2"
 SCRIPTURE_IMAGE_SIZE = "1024x1024"
 SCRIPTURE_IMAGE_QUALITY = "medium"
@@ -195,6 +197,7 @@ class ScripturePostGenerator:
         self._initialize_minio()
         self._load_config_from_mongo()
         self.client = OpenAI(api_key=self.openai_api_key)
+        self.services_password = self.secrets.get("SERVICES_PASSWORD", "")
         self._load_watermark_logo()
         self._verses_cache: Optional[list] = None
 
@@ -749,27 +752,20 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
         if not self.s3_client:
             logger.error("[ERROR] MinIO not initialized")
             return None
+        if not self.services_password:
+            logger.error("[ERROR] SERVICES_PASSWORD not available")
+            return None
         try:
-            response = self.client.images.generate(
-                model=SCRIPTURE_IMAGE_MODEL,
-                prompt=prompt,
-                size=SCRIPTURE_IMAGE_SIZE,
-                quality=SCRIPTURE_IMAGE_QUALITY,
-                n=1,
+            response = requests.post(
+                f"{DHYANAPP_SERVICES_URL}/image_1/generate",
+                json={"prompt": prompt, "password": self.services_password, "size": "square", "quality": "medium"},
+                timeout=120,
             )
-            _img_price = {"low": 0.01, "medium": 0.04, "high": 0.17}
-            try:
-                record_usage(
-                    "openai", SCRIPTURE_IMAGE_MODEL, "scripture_post.generate_image",
-                    images=1,
-                    cost_usd=_img_price.get(SCRIPTURE_IMAGE_QUALITY, 0.04),
-                    meta={"size": SCRIPTURE_IMAGE_SIZE, "quality": SCRIPTURE_IMAGE_QUALITY},
-                )
-            except Exception as track_err:
-                logger.warning(f"Failed to record image usage: {track_err}")
+            if response.status_code != 200:
+                logger.error(f"[ERROR] Image generation failed: {response.status_code} - {response.text[:200]}")
+                return None
 
-            raw_bytes = base64.b64decode(response.data[0].b64_json)
-            image = Image.open(io.BytesIO(raw_bytes))
+            image = Image.open(io.BytesIO(response.content))
             image = self._apply_watermark_top_right(image)
             buf = io.BytesIO()
             image.save(buf, format="WEBP", lossless=True)

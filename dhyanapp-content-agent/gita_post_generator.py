@@ -18,6 +18,7 @@ import logging
 import random
 import uuid
 import sys
+import requests
 from datetime import datetime, date
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -42,6 +43,7 @@ GITA_SCRIPTURE_ID = "BhagwadGita"
 GITA_SCRIPTURE_TITLE_FIELD = "BhagwadGita"  # value of scripture_verses.scriptureTitle
 
 
+DHYANAPP_SERVICES_URL = "https://services.dhyanapp.org"
 GITA_IMAGE_MODEL = "gpt-image-2"
 GITA_IMAGE_SIZE = "1024x1024"
 GITA_IMAGE_QUALITY = "medium"
@@ -160,6 +162,7 @@ class GitaVersePostGenerator:
         self._initialize_minio()
         self._load_config_from_mongo()
         self.client = OpenAI(api_key=self.openai_api_key)
+        self.services_password = self.secrets.get("SERVICES_PASSWORD", "")
         self._load_watermark_logo()
         self._gita_scripture_cache: Optional[dict] = None
         self._gita_verses_cache: Optional[list] = None
@@ -732,37 +735,29 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
         if not self.s3_client:
             logger.error("[ERROR] MinIO not initialized")
             return None
+        if not self.services_password:
+            logger.error("[ERROR] SERVICES_PASSWORD not available")
+            return None
         try:
-            response = self.client.images.generate(
-                model=GITA_IMAGE_MODEL,
-                prompt=prompt,
-                size=GITA_IMAGE_SIZE,
-                quality=GITA_IMAGE_QUALITY,
-                n=1,
+            response = requests.post(
+                f"{DHYANAPP_SERVICES_URL}/image_1/generate",
+                json={"prompt": prompt, "password": self.services_password, "size": "square", "quality": "medium"},
+                timeout=120,
             )
-            _img_price = {"low": 0.01, "medium": 0.04, "high": 0.17, "auto": 0.04}
-            try:
-                record_usage(
-                    "openai", GITA_IMAGE_MODEL, "gita_post.generate_image",
-                    images=1,
-                    cost_usd=_img_price.get(GITA_IMAGE_QUALITY, 0.04),
-                    meta={"size": GITA_IMAGE_SIZE, "quality": GITA_IMAGE_QUALITY},
-                )
-            except Exception as track_err:
-                logger.warning(f"Failed to record image usage: {track_err}")
+            if response.status_code != 200:
+                logger.error(f"[ERROR] Image generation failed: {response.status_code} - {response.text[:200]}")
+                return None
 
-            raw_bytes = base64.b64decode(response.data[0].b64_json)
-            image = Image.open(io.BytesIO(raw_bytes))
+            image = Image.open(io.BytesIO(response.content))
             image = self._apply_watermark(image)
             buf = io.BytesIO()
             image.save(buf, format="WEBP", lossless=True)
-            image_bytes = buf.getvalue()
 
             object_key = f"Posts/images/bot_gita/{post_id}.webp"
             self.s3_client.put_object(
                 Bucket=MINIO_BUCKET,
                 Key=object_key,
-                Body=image_bytes,
+                Body=buf.getvalue(),
                 ContentType="image/webp",
             )
             base_url = MINIO_PUBLIC_URL if MINIO_PUBLIC_URL else f"http://{MINIO_ENDPOINT}"

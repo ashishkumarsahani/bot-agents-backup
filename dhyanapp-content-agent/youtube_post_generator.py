@@ -44,7 +44,7 @@ MONGODB_URI = os.getenv(
     "MONGODB_URI",
     "mongodb://dhyanadmin:Dhyan%40Mongo2026!@localhost:27017/dhyanapp?authSource=admin&replicaSet=rs0",
 )
-DHYANAPP_SERVICES_URL = "https://dhyanapp-services.epilepto.com"
+DHYANAPP_SERVICES_URL = "https://services.dhyanapp.org"
 TRANSCRIPT_URL = f"{DHYANAPP_SERVICES_URL}/youtube/transcript"
 
 YT_DLP = "/home/admin/.local/bin/yt-dlp"

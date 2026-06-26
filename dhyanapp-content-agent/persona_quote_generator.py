@@ -46,7 +46,7 @@ FONTS_DIR = Path(__file__).parent / "fonts"
 
 # API Configuration
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "d85ad7c3297a1e315dd011b058b5d81c749fd07b")
-DHYANAPP_SERVICES_URL = "https://dhyanapp-services.epilepto.com"
+DHYANAPP_SERVICES_URL = "https://services.dhyanapp.org"
 
 # MongoDB + MinIO
 from pymongo import MongoClient

@@ -1,7 +1,7 @@
 {
-  "last_date": "2026-06-24",
-  "last_article_id": "8c078a65-a152-4612-8c7f-41c92b75fde2",
-  "posted_article_ids": [
+  "last_date": "2026-06-26",
+  "last_article_id": "d323ee4f-982d-4db5-930a-2e40c1ee7816",
+  "posted_article_ids_tattvaloka": [
     "LxvSluw91qtXEppxNP9T",
     "VWSw2W0nNUImZ1iSIwqq",
     "hYzy20J8wJMCleD3MEX7",
@@ -12,7 +12,12 @@
     "YxdPgTbEHvMCSgtPk7Nx",
     "U70gX120Tp7YVJ1HTiiQ",
     "72Sf7cYONbmy9ldEpFX0",
-    "Cy1ZWwTJEkaKwQBfQxUj"
+    "Cy1ZWwTJEkaKwQBfQxUj",
+    "k91pZf5nsHPCef18In4R"
   ],
+  "posted_article_ids_vedanta-kesari": [
+    "lxATfLzE7g9KWfsxvjR9"
+  ],
+  "next_magazine": "tattvaloka",
   "next_image_language": "hindi"
 }
