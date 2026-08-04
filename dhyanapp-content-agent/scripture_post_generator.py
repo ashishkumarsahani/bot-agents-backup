@@ -755,16 +755,32 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
         if not self.services_password:
             logger.error("[ERROR] SERVICES_PASSWORD not available")
             return None
-        try:
-            response = requests.post(
-                f"{DHYANAPP_SERVICES_URL}/image_1/generate",
-                json={"prompt": prompt, "password": self.services_password, "size": "square", "quality": "medium"},
-                timeout=120,
-            )
-            if response.status_code != 200:
-                logger.error(f"[ERROR] Image generation failed: {response.status_code} - {response.text[:200]}")
-                return None
+        # The image endpoint (gpt-image via services.dhyanapp.org) can take
+        # >120s when the upstream moderation LLM is slow; a single slow call
+        # used to silently drop the image and the post went out image-less.
+        # Retry once on timeout/error and allow up to 180s per attempt.
+        response = None
+        for attempt in (1, 2):
+            try:
+                response = requests.post(
+                    f"{DHYANAPP_SERVICES_URL}/image_1/generate",
+                    json={"prompt": prompt, "password": self.services_password, "size": "square", "quality": "medium"},
+                    timeout=180,
+                )
+                break
+            except Exception as e:
+                logger.warning(f"[WARN] Image request attempt {attempt} failed: {e}")
+                response = None
+                if attempt == 2:
+                    logger.error("[ERROR] Image generation failed after 2 attempts")
+                    return None
 
+        if response is None or response.status_code != 200:
+            status = response.status_code if response is not None else "no-response"
+            logger.error(f"[ERROR] Image generation failed: {status} - {response.text[:200] if response is not None else ''}")
+            return None
+
+        try:
             image = Image.open(io.BytesIO(response.content))
             image = self._apply_watermark_top_right(image)
             buf = io.BytesIO()

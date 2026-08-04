@@ -4,12 +4,12 @@
 # Engagement is handled by cloud functions
 
 # Agent enablement check
-/home/admin/bot_agents/dhyanapp-content-agent/.venv/bin/python /home/admin/bot_agents/dhyanapp-content-agent/check_agent.py persona-quote-bot || {
+/Users/epilepto/bot_agents/dhyanapp-content-agent/.venv/bin/python /Users/epilepto/bot_agents/dhyanapp-content-agent/check_agent.py persona-quote-bot || {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Persona Quote Bot is disabled, skipping."
     exit 0
 }
 
-cd /home/admin/bot_agents/dhyanapp-content-agent
+cd /Users/epilepto/bot_agents/dhyanapp-content-agent
 
 # Generate and post the daily quote (no engagement - handled by cloud functions)
-/home/admin/bot_agents/dhyanapp-content-agent/.venv/bin/python persona_quote_generator.py --run-now --single --no-engagement
+/Users/epilepto/bot_agents/dhyanapp-content-agent/.venv/bin/python persona_quote_generator.py --run-now --single --no-engagement

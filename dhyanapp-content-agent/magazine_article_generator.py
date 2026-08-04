@@ -4,7 +4,7 @@ Tattvaloka Magazine Article Generator for DhyanApp.
 Turns Tattvaloka magazine articles (MongoDB `source_magazine_articles`) into long-form
 articles published to `article_files_v1` on an alternate-day schedule.
 
-Cover image: portrait 1024×1536, magazine-cover style (full-bleed classical illustration
+Cover image: landscape 1536×1024, magazine-cover style (full-bleed classical illustration
 + editorial title header). NOT an infographic poster.
 
 State persisted in magazine_article_state.json beside this script:
@@ -105,7 +105,7 @@ SARVAM_TTS_MODEL = "bulbul:v3"
 
 DHYANAPP_SERVICES_URL = "https://services.dhyanapp.org"
 ARTICLE_IMAGE_MODEL = "gpt-image-2"
-ARTICLE_IMAGE_SIZE = "1024x1536"   # portrait — magazine cover
+ARTICLE_IMAGE_SIZE = "1536x1024"   # landscape — magazine cover
 ARTICLE_IMAGE_QUALITY = "medium"
 DHYAN_LOGO_PATH = "/home/admin/dhyanapp-services/images/dhyan_logo.png"
 
@@ -118,12 +118,12 @@ MAGAZINE_CLOSERS = [
     "जय श्री शारदाम्बा",
 ]
 
-# Classical magazine-cover illustration styles — portrait, image-led, NOT infographic.
+# Classical magazine-cover illustration styles — landscape, image-led, NOT infographic.
 COVER_IMAGE_STYLES = [
     {
         "name": "Cover Illustration Feature",
         "description": (
-            "A tall portrait magazine cover: a large, dignified classical Indian devotional "
+            "A wide landscape magazine cover: a large, dignified classical Indian devotional "
             "illustration fills roughly two-thirds of the frame. A slim maroon-and-gold header "
             "band at the very TOP carries the kicker line and feature title in elegant serif. "
             "Below the header the illustration flows to the bottom edge. Image-dominant, "
@@ -134,7 +134,7 @@ COVER_IMAGE_STYLES = [
     {
         "name": "Hero Portrait Cover",
         "description": (
-            "Full-bleed portrait painting of the central deity, sage, or sacred scene, "
+            "Full-bleed landscape painting of the central deity, sage, or sacred scene, "
             "richly rendered in classical Indian style. A clean white-ivory editorial strip "
             "at the TOP carries the small kicker and large feature title. The art bleeds to "
             "the left, right, and bottom edges — cinematic and devotional."
@@ -144,7 +144,7 @@ COVER_IMAGE_STYLES = [
     {
         "name": "Framed Art Plate Cover",
         "description": (
-            "A tall portrait art plate: the subject rendered as a painterly classical "
+            "A wide landscape art plate: the subject rendered as a painterly classical "
             "illustration centered within an ornate gold-and-maroon border. The feature title "
             "appears in elegant serif at the top inside the border, a single short kicker above "
             "it. Mostly image — refined like a collectible magazine plate."
@@ -154,7 +154,7 @@ COVER_IMAGE_STYLES = [
     {
         "name": "Sringeri Temple Scene Cover",
         "description": (
-            "A serene tall portrait illustration of the Sringeri Sharada temple by the Tunga "
+            "A serene wide landscape illustration of the Sringeri Sharada temple by the Tunga "
             "river, or a sacred landscape fitting the article — as the dominant visual filling "
             "most of the frame. The feature title sits in a calm overlaid editorial band near "
             "the top. Atmospheric and image-led."
@@ -164,17 +164,17 @@ COVER_IMAGE_STYLES = [
     {
         "name": "Deity Portrait Cover",
         "description": (
-            "A refined tall portrait painting of the relevant deity, sage, or Adi Shankara — "
-            "head-and-shoulders to three-quarter length — as the focal image filling the frame. "
-            "Small maroon kicker and large serif feature title at the top, the rest is pure art. "
-            "Portrait-dominant, very sparse text."
+            "A refined wide landscape painting of the relevant deity, sage, or Adi Shankara — "
+            "head-and-shoulders to three-quarter length, positioned off-center — as the focal "
+            "image filling the frame. Small maroon kicker and large serif feature title at the "
+            "top, the rest is pure art. Image-dominant, very sparse text."
         ),
         "colors": "deep maroon, gold, ivory, and warm devotional tones",
     },
     {
         "name": "Lamp-lit Contemplative Cover",
         "description": (
-            "A tall portrait atmospheric scene lit by oil lamps or soft divine light — evoking "
+            "A wide landscape atmospheric scene lit by oil lamps or soft divine light — evoking "
             "the mood of the article — filling almost the entire frame. The feature title "
             "appears in a single elegant serif line near the top against the scene. "
             "Mood-driven, very little text."
@@ -185,7 +185,7 @@ COVER_IMAGE_STYLES = [
         "name": "Sacred Symbol Cover",
         "description": (
             "One large central sacred motif — Om, Goddess Sharada's veena, a lotus, or the "
-            "article's key symbol — rendered as elegant tall-format focal art filling the frame, "
+            "article's key symbol — rendered as elegant wide-format focal art filling the frame, "
             "the feature title beneath it in serif and a thin gold rule above. "
             "Symbol-dominant, minimal words."
         ),
@@ -194,7 +194,7 @@ COVER_IMAGE_STYLES = [
     {
         "name": "Manuscript Art Cover",
         "description": (
-            "An aged-parchment tall portrait with a single fine classical illustration of the "
+            "An aged-parchment wide landscape with a single fine classical illustration of the "
             "subject as the centerpiece filling most of the frame, a calligraphic-style serif "
             "title and kicker at the top; subtle palm-leaf texture at the edges. "
             "Balanced art-and-title, not text-filled."
@@ -739,11 +739,11 @@ Keep text short enough to render cleanly on a magazine cover. No quotation marks
         )
 
         return (
-            f"A premium PORTRAIT magazine cover for \"{magazine_name}\", {journal_desc}, "
+            f"A premium LANDSCAPE magazine cover for \"{magazine_name}\", {journal_desc}, "
             f"in the \"{style['name']}\" style: {style['description']} "
             f"Color palette: {style['colors']}. "
 
-            f"BALANCE: this is a PORTRAIT cover — tall format, image-dominant. "
+            f"BALANCE: this is a LANDSCAPE cover — wide format, image-dominant. "
             f"A strong, beautiful classical Indian devotional illustration fills roughly "
             f"two-thirds to three-quarters of the frame. "
             f"It must feel like a real {magazine_name} magazine cover — dignified, painterly, "
@@ -1097,16 +1097,32 @@ Return ONLY valid JSON:
         if not self.services_password:
             logger.error("[ERROR] SERVICES_PASSWORD not available")
             return None
-        try:
-            response = _requests.post(
-                f"{DHYANAPP_SERVICES_URL}/image_1/generate",
-                json={"prompt": prompt, "password": self.services_password, "size": "portrait", "quality": "medium"},
-                timeout=120,
-            )
-            if response.status_code != 200:
-                logger.error(f"[ERROR] Image generation failed: {response.status_code} - {response.text[:200]}")
-                return None
+        # The image endpoint (gpt-image via services.dhyanapp.org) can take
+        # >120s under load; a single slow call used to silently drop the cover
+        # and the article went out image-less. Retry once on timeout/error and
+        # allow up to 180s per attempt (matches the OpenAI calls below).
+        response = None
+        for attempt in (1, 2):
+            try:
+                response = _requests.post(
+                    f"{DHYANAPP_SERVICES_URL}/image_1/generate",
+                    json={"prompt": prompt, "password": self.services_password, "size": "landscape", "quality": "medium"},
+                    timeout=180,
+                )
+                break
+            except Exception as e:
+                logger.warning(f"[WARN] Image request attempt {attempt} failed: {e}")
+                response = None
+                if attempt == 2:
+                    logger.error("[ERROR] Image generation failed after 2 attempts")
+                    return None
 
+        if response is None or response.status_code != 200:
+            status = response.status_code if response is not None else "no-response"
+            logger.error(f"[ERROR] Image generation failed: {status} - {(response.text[:200] if response is not None else '')}")
+            return None
+
+        try:
             buf = io.BytesIO(response.content)
 
             object_key = f"Knowledge/ArticleBot/{article_id}/poster_image.webp"
@@ -1182,19 +1198,23 @@ Return ONLY valid JSON:
         en_desc = article_data.get("description", "")
         hi_desc = (hindi_data or {}).get("description", "")
 
-        primary_titles = {"English": en_title}
-        sub_titles = {"English": en_subtitle}
-        short_descriptions = {"English": en_desc}
-        original_author_names = {"English": self.author_name, "Hindi": magazine_config["name_hindi"]}
-        sound_artist_names = {"English": self.author_name, "Hindi": magazine_config["name_hindi"]}
-        author_short_bios = {"English": magazine_config["bio"], "Hindi": magazine_config["bio_hindi"]}
+        # These display maps MUST be keyed by ISO code (en/hi), not language name.
+        # The app + home/recommended-sessions resolve titles by ISO locale; a
+        # name-keyed map ("English"/"Hindi") renders with a blank title.
+        # (alternate_audio/text/title above are intentionally name-keyed.)
+        primary_titles = {"en": en_title}
+        sub_titles = {"en": en_subtitle}
+        short_descriptions = {"en": en_desc}
+        original_author_names = {"en": self.author_name, "hi": magazine_config["name_hindi"]}
+        sound_artist_names = {"en": self.author_name, "hi": magazine_config["name_hindi"]}
+        author_short_bios = {"en": magazine_config["bio"], "hi": magazine_config["bio_hindi"]}
 
         if hi_title:
-            primary_titles["Hindi"] = hi_title
+            primary_titles["hi"] = hi_title
         if hi_subtitle:
-            sub_titles["Hindi"] = hi_subtitle
+            sub_titles["hi"] = hi_subtitle
         if hi_desc:
-            short_descriptions["Hindi"] = hi_desc
+            short_descriptions["hi"] = hi_desc
 
         doc = {
             "_id": article_id,
