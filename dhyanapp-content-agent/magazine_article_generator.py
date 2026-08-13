@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 STATE_FILE = Path(__file__).parent / "magazine_article_state.json"
 
-MAGAZINE_ROTATION = ["tattvaloka", "vedanta-kesari"]
+MAGAZINE_ROTATION = ["tattvaloka", "vedanta-kesari", "kalyan", "prabuddha-bharati"]
 
 MAGAZINES = {
     "tattvaloka": {
@@ -83,6 +83,44 @@ MAGAZINES = {
         ),
         "creator_id_fallback": "7144ff02f4844d58b657b49df660",
         "profile_image_url_fallback": "https://storage.dhyanapp.org/dhyanapp-recordings/creator-profiles/7144ff02f4844d58b657b49df660.png",
+    },
+    "kalyan": {
+        "slug": "kalyan",
+        "name": "Kalyan",
+        "name_hindi": "कल्याण",
+        "bio": (
+            "Kalyan is the monthly Hindi spiritual magazine of Gita Press, Gorakhpur, "
+            "published since 1926, covering Sanatana Dharma, Vedanta, and Indian culture."
+        ),
+        "bio_hindi": (
+            "कल्याण गीता प्रेस, गोरखपुर की मासिक हिंदी पत्रिका है, जो 1926 से प्रकाशित है और "
+            "सनातन धर्म, वेदांत तथा भारतीय संस्कृति पर केंद्रित है।"
+        ),
+        "cover_journal_desc": (
+            "the monthly Hindi spiritual magazine of Gita Press, Gorakhpur"
+        ),
+        "creator_id_fallback": "21TbwsVF3YuH10Qd5fTm",
+        "profile_image_url_fallback": "https://archive.org/services/img/PCGc_kalyan-issue-no.-11-vol.-53-november-1979-gita-press",
+    },
+    "prabuddha-bharati": {
+        "slug": "prabuddha-bharati",
+        "name": "Prabuddha Bharata",
+        "name_hindi": "प्रबुद्ध भारत",
+        "bio": (
+            "Prabuddha Bharata is the monthly English journal of Advaita Ashrama, "
+            "Ramakrishna Math, on Vedanta, spiritual life, and Indian culture, "
+            "published since 1896."
+        ),
+        "bio_hindi": (
+            "प्रबुद्ध भारत, अद्वैत आश्रम (रामकृष्ण मठ) की मासिक अंग्रेज़ी पत्रिका है, जो 1896 से "
+            "प्रकाशित है और वेदांत, आध्यात्मिक जीवन तथा भारतीय संस्कृति पर केंद्रित है।"
+        ),
+        "cover_journal_desc": (
+            "the monthly English journal of Advaita Ashrama, Ramakrishna Math, on Vedanta "
+            "and spiritual life"
+        ),
+        "creator_id_fallback": "7dbfcYZjHyBlzebJU8eI",
+        "profile_image_url_fallback": "https://advaitaashrama.org/wp-content/uploads/PB-January-2023-Complete-for-Online-1-1.png",
     },
 }
 
@@ -275,7 +313,8 @@ MINIO_PUBLIC_URL = os.getenv("MINIO_PUBLIC_URL", "https://storage.dhyanapp.org")
 
 
 class MagazineArticleGenerator:
-    """Generates articles from Tattvaloka and Vedanta Kesari, alternating every day."""
+    """Generates articles from Tattvaloka, Vedanta Kesari, Kalyan, and Prabuddha
+    Bharata, rotating one magazine per day (round-robin through MAGAZINE_ROTATION)."""
 
     def __init__(self):
         self.state = self._load_state()
@@ -398,6 +437,8 @@ class MagazineArticleGenerator:
             "last_article_id": None,
             "posted_article_ids_tattvaloka": [],
             "posted_article_ids_vedanta-kesari": [],
+            "posted_article_ids_kalyan": [],
+            "posted_article_ids_prabuddha-bharati": [],
             "next_magazine": "tattvaloka",
             "next_image_language": "english",
         }
@@ -1397,7 +1438,7 @@ Return ONLY valid JSON:
     def run_daily(self) -> Optional[str]:
         today_iso = date.today().isoformat()
         logger.info("=" * 60)
-        logger.info("MAGAZINE ARTICLE GENERATOR (Tattvaloka / Vedanta Kesari)")
+        logger.info("MAGAZINE ARTICLE GENERATOR (Tattvaloka / Vedanta Kesari / Kalyan / Prabuddha Bharata)")
         logger.info(f"Date: {today_iso}")
         logger.info(f"Time: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}")
         logger.info(f"Next magazine: {self.state.get('next_magazine', 'tattvaloka')}")
@@ -1423,7 +1464,7 @@ def get_magazine_article_generator() -> MagazineArticleGenerator:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Magazine Article Generator (Tattvaloka / Vedanta Kesari)")
+    parser = argparse.ArgumentParser(description="Magazine Article Generator (Tattvaloka / Vedanta Kesari / Kalyan / Prabuddha Bharata)")
     parser.add_argument("--run-now", action="store_true",
                         help="Run daily publish (posts every day, alternates magazine)")
     parser.add_argument("--test", action="store_true",
@@ -1450,6 +1491,8 @@ if __name__ == "__main__":
             "last_article_id": None,
             "posted_article_ids_tattvaloka": [],
             "posted_article_ids_vedanta-kesari": [],
+            "posted_article_ids_kalyan": [],
+            "posted_article_ids_prabuddha-bharati": [],
             "next_magazine": "tattvaloka",
             "next_image_language": "english",
         }
