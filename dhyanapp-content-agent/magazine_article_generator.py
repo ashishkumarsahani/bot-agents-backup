@@ -142,6 +142,22 @@ SARVAM_TTS_VOICE_HINDI = "aditya"   # natural Indian male voice
 SARVAM_TTS_MODEL = "bulbul:v3"
 
 DHYANAPP_SERVICES_URL = "https://services.dhyanapp.org"
+
+# Local AI TTS (OmniVoice Studio) — free, offline, uses cloned voices
+LOCAL_AI_TTS_URL = os.getenv("LOCAL_AI_TTS_URL", "http://localhost:8507")
+LOCAL_AI_PASSWORD = os.getenv("LOCAL_AI_PASSWORD", "admin@6553")
+USE_LOCAL_AUDIO = os.getenv("USE_LOCAL_AUDIO", "true").lower() == "true"
+
+# Cloned voice profiles — one is chosen randomly per article for both EN + HI.
+# Each voice is used for both languages (OmniVoice clones the timbre, not the language).
+LOCAL_AI_VOICES = [
+    ("eba63537", "Swami Atmashraddhananda"),
+    ("73feaaa1", "Sw Suddhidhananda"),
+    ("49bd830a", "S Vishwanath"),
+    ("22f3ec30", "Ashish Sahani"),
+    ("87dd47b5", "Rituparna"),
+    ("d339aa34", "Ajay Chahal"),
+]
 ARTICLE_IMAGE_MODEL = "gpt-image-2"
 ARTICLE_IMAGE_SIZE = "1536x1024"   # landscape — magazine cover
 ARTICLE_IMAGE_QUALITY = "medium"
@@ -258,7 +274,9 @@ def _sanitize_hindi_text(text: str) -> str:
 
 
 def _strip_markdown_for_tts(text: str) -> str:
-    """Remove markdown syntax before sending to TTS."""
+    """Remove markdown syntax before sending to TTS.
+    Ensures every line ends with a full stop or daṇḍa so the TTS engine
+    inserts a natural pause at line breaks."""
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)   # headings
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)                  # bold
     text = re.sub(r'\*(.+?)\*', r'\1', text)                       # italic
@@ -266,6 +284,32 @@ def _strip_markdown_for_tts(text: str) -> str:
     text = re.sub(r'^\d+\.\s+', '', text, flags=re.MULTILINE)      # numbered lists
     text = re.sub(r'\n---+\n', '\n', text)                         # hr
     text = re.sub(r'\n{3,}', '\n\n', text)                        # excess blank lines
+
+    # Ensure each line ends with sentence-ending punctuation for TTS pauses.
+    # Convert Devanagari daṇḍa/double-daṇḍa to periods — OmniVoice (XTTS)
+    # doesn't recognise ।/॥ as sentence boundaries, so they produce no pause.
+    text = text.replace("॥", ".").replace("।", ".")
+    lines = []
+    for line in text.split('\n'):
+        line = line.rstrip()
+        if not line:
+            lines.append('')
+            continue
+        # Check if line already ends with . ! ? or :
+        if line[-1] in '.!?:;—':
+            lines.append(line)
+        else:
+            lines.append(line + '.')
+    text = '\n'.join(lines)
+    # Collapse newlines into period+space — XTTS treats \n as whitespace and
+    # reads across line breaks without pausing. A period forces a sentence break.
+    # Paragraph breaks (\n\n) get a double period (. . ) for a longer pause
+    # so the TTS creates a clear break between title and body.
+    text = re.sub(r'\n\n+', '. . ', text)
+    text = re.sub(r'\n+', '. ', text)
+    text = re.sub(r'\. \. ', '. ', text)  # clean up ". . " from empty lines
+    text = re.sub(r'\.{2,}', '. ', text)  # collapse multiple periods
+    text = re.sub(r'\.  +', '. ', text)   # collapse ".  " (double space) → ". "
     return text.strip()
 
 
@@ -741,75 +785,72 @@ Keep text short enough to render cleanly on a magazine cover. No quotation marks
         if magazine_config is None:
             magazine_config = MAGAZINES["tattvaloka"]
         magazine_name = magazine_config["name"]
-        magazine_name_upper = magazine_name.upper()
-        journal_desc = magazine_config["cover_journal_desc"]
         label = assets["label"].replace('"', "'")
         headline = assets["headline"].replace('"', "'")
         category = (article.get("category") or "article").strip()
 
         scene_hints = {
             "story": (
-                "Depict the key moment of the story — the characters, setting, and action — "
-                "as a beautiful, dignified classical Indian illustration."
+                "A serene cinematic scene depicting the key moment of the story — the characters, "
+                "setting, and mood — rendered with classical Indian devotional sensibility."
             ),
             "discourse": (
-                "Show a serene sacred scene fitting the teaching — a sage or guru in a calm "
-                "temple or natural setting, or the Sringeri Sharada temple by the Tunga river."
+                "A serene sacred scene fitting the teaching — a sage or guru in a calm temple "
+                "or natural setting, or a sacred landscape with mountains and calm water."
             ),
             "article": (
-                "Show one strong, evocative classical illustration of the article's central "
-                "subject — the deity, sage, place, or idea."
+                "A serene cinematic scene visually representing the article's central subject — "
+                "the deity, sage, place, or idea — with soft mist, natural light, and spiritual symbolism."
             ),
             "subhashita": (
-                "Show an elegant symbolic illustration of the verse's image — a lamp, lotus, "
-                "river, or sage — calm and refined."
+                "An elegant symbolic scene — a lamp, lotus, river, or sage — calm and refined, "
+                "with soft natural lighting and subtle ornamental details."
             ),
             "poem": (
-                "Show a soft, lyrical devotional scene evoking the poem's imagery — "
-                "light, lotus, flame, or the divine."
+                "A soft, lyrical devotional scene evoking the poem's imagery — light, lotus, "
+                "flame, or the divine — with gentle mist and warm sunrise light."
             ),
             "qna": (
-                "Show a serene seeker-and-sage scene — two figures in calm dialogue "
-                "in a sacred setting."
+                "A serene seeker-and-sage scene — two figures in calm dialogue in a sacred "
+                "natural setting with soft light and subtle Indian ornamental patterns."
             ),
         }
         scene_hint = scene_hints.get(category, scene_hints["article"])
+
         title_typography = (
-            "elegant Devanagari Hindi typography" if image_language == "hindi"
-            else "an elegant editorial serif typeface"
+            "elegant Devanagari Hindi serif typography"
+            if image_language == "hindi"
+            else "elegant, refined serif typography"
         )
 
         return (
-            f"A premium LANDSCAPE magazine cover for \"{magazine_name}\", {journal_desc}, "
-            f"in the \"{style['name']}\" style: {style['description']} "
-            f"Color palette: {style['colors']}. "
-
-            f"BALANCE: this is a LANDSCAPE cover — wide format, image-dominant. "
-            f"A strong, beautiful classical Indian devotional illustration fills roughly "
-            f"two-thirds to three-quarters of the frame. "
-            f"It must feel like a real {magazine_name} magazine cover — dignified, painterly, "
-            f"devotional — NOT a flat infographic, NOT folk or tribal art, NOT a poster with "
-            f"bullet points or text columns. "
-
-            f"MAIN ILLUSTRATION (the focal point): {scene_hint} "
-            f"Render it richly and elegantly, with classical Indian devotional art sensibility. "
-
-            f"TEXT — render EXACTLY these two lines of text, clearly legible, in {title_typography}: "
-            f"(1) The word \"{magazine_name_upper}\" in small caps or a refined serif, at the very top — this MUST be visible and readable; "
-            f"(2) the feature title in large prominent serif directly below, reading: {headline}. "
-            f"The word {magazine_name_upper} must appear on the cover — do not omit it. "
-            f"Do NOT add any body text, bullet points, key points, summary lines, captions, "
-            f"page numbers, or any other text. Only those two lines. "
-
-            f"LAYOUT: the kicker and title sit in a clean editorial band at the very TOP. "
-            f"The illustration fills the rest of the frame below, flowing to the bottom and "
-            f"side edges. "
-            f"Leave a small empty area in the UPPER-RIGHT corner of the header free of text "
-            f"and imagery so a brand logo fits without overlap. "
-
-            f"Overall feel: dignified, painterly, premium, contemplative — a quality spiritual "
-            f"magazine cover. "
-            f"Do NOT include any transliteration or Latin-script romanization of Sanskrit."
+            f'Create a premium 16:9 landscape editorial cover image for a spiritual, devotional, '
+            f'meditation, yoga, philosophy, or self-development article.\n'
+            f'Use a minimalist Zen-inspired aesthetic with a soft warm cream/off-white background, '
+            f'a subtle bluish atmospheric tint, muted gold accents, deep navy typography, gentle '
+            f'natural lighting, and elegant vintage Indian ornamental details.\n\n'
+            f'Text layout:\n'
+            f'Show ONLY the article title as text.\n'
+            f'Place the title prominently in the left/center area using {title_typography}.\n'
+            f'Place a thin vintage ornamental gold line above the title, with a small subtle '
+            f'lotus/Indian decorative motif in the center.\n'
+            f'Place another matching vintage ornamental gold line below the title.\n'
+            f'Do not add category names, subtitles, descriptions, quotes, dates, logos, buttons, '
+            f'badges, or other text.\n\n'
+            f'Visual composition:\n'
+            f'Keep the left side spacious and highly readable for the title. On the right side, '
+            f'create a serene cinematic scene that visually represents the article topic — '
+            f'such as meditation, nature, temple architecture, Krishna, Shiva, yoga, wisdom, '
+            f'self-development, books, mountains, rivers, prayer, or spiritual symbolism.\n'
+            f'Use soft mist, mountains, calm water, sunrise/sunset light, subtle clouds, birds, '
+            f'foliage, stone textures, and delicate Indian ornamental patterns where appropriate. '
+            f'Keep these elements understated and sophisticated.\n\n'
+            f'The overall result should feel premium, timeless, peaceful, spiritual, Indian, '
+            f'editorial, and slightly vintage, rather than like a commercial poster or stock '
+            f'photograph.\n\n'
+            f'No category label. No extra text. No subtitle. Only the article title.\n'
+            f'Article Title: {headline}\n'
+            f'Visual Concept: {scene_hint}'
         )
 
     # ----- Hindi translation -----
@@ -863,10 +904,64 @@ Return ONLY valid JSON:
             logger.error(f"[ERROR] Hindi translation failed: {e}")
             return None
 
-    def generate_english_audio(self, text: str) -> Optional[bytes]:
-        """Generate English MP3 using Sarvam bulbul:v3 (aditya, en-IN).
-        Fallback to OpenAI TTS if Sarvam fails after 3 attempts.
+    def _local_tts(self, text: str, voice_id: str, language: str) -> Optional[bytes]:
+        """Generate audio via local OmniVoice TTS (free, offline).
+
+        Uses cloned voice profiles — Ashish Sahani for English, Rituparna for Hindi.
+        Returns MP3 bytes or None on failure.
         """
+        import time
+        clean_text = _strip_markdown_for_tts(text)
+        if not clean_text:
+            return None
+
+        payload = {
+            "model": "tts-1",
+            "input": clean_text,
+            "voice": voice_id,
+            "language": language,
+            "response_format": "mp3",
+            "speed": 1.0,
+        }
+
+        for attempt in range(1, 4):
+            try:
+                response = _requests.post(
+                    f"{LOCAL_AI_TTS_URL}/v1/audio/speech",
+                    json=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Service-Password": LOCAL_AI_PASSWORD,
+                    },
+                    timeout=300,
+                )
+                if response.status_code == 200 and len(response.content) > 100:
+                    logger.info(f"Local AI TTS succeeded on attempt {attempt} ({len(response.content)} bytes)")
+                    return response.content
+                else:
+                    logger.warning(f"Local AI TTS attempt {attempt}/3: HTTP {response.status_code}")
+            except Exception as e:
+                logger.warning(f"Local AI TTS attempt {attempt}/3 failed: {e}")
+            if attempt < 3:
+                time.sleep(3)
+
+        logger.warning("All 3 local AI TTS attempts failed")
+        return None
+
+    def generate_english_audio(self, text: str) -> Optional[bytes]:
+        """Generate English MP3.
+
+        Priority: Local AI (random cloned voice) → Sarvam → OpenAI TTS fallback.
+        The chosen voice is stored in self._current_voice for reuse in Hindi.
+        """
+        if USE_LOCAL_AUDIO:
+            voice_id, voice_name = random.choice(LOCAL_AI_VOICES)
+            self._current_voice = (voice_id, voice_name)
+            logger.info(f"Trying local AI TTS ({voice_name}) for English...")
+            audio = self._local_tts(text, voice_id, "en")
+            if audio:
+                return audio
+            logger.warning("Local AI TTS failed — falling back to Sarvam/OpenAI")
         import time
         clean_text = _strip_markdown_for_tts(text)
         if not clean_text:
@@ -1054,9 +1149,17 @@ Return ONLY valid JSON:
 
     def generate_hindi_audio(self, text: str) -> Optional[bytes]:
         """Generate Hindi MP3.
-        Primary: Sarvam bulbul:v3 (aditya) — 3 attempts with 5s waits.
-        Fallback: OpenAI TTS (nova) if all Sarvam attempts fail.
+
+        Priority: Local AI (same voice as English) → Sarvam → OpenAI TTS fallback.
+        Reuses the voice chosen during generate_english_audio for consistency.
         """
+        if USE_LOCAL_AUDIO:
+            voice_id, voice_name = getattr(self, '_current_voice', random.choice(LOCAL_AI_VOICES))
+            logger.info(f"Trying local AI TTS ({voice_name}) for Hindi...")
+            audio = self._local_tts(text, voice_id, "hi")
+            if audio:
+                return audio
+            logger.warning("Local AI TTS failed — falling back to Sarvam/OpenAI")
         import time
         clean_text = _strip_markdown_for_tts(text)
         if not clean_text:

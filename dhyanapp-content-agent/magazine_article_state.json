@@ -1,6 +1,6 @@
 {
-  "last_date": "2026-08-15",
-  "last_article_id": "23973c87-6ace-474e-ba2c-870869f4d4cb",
+  "last_date": "2026-08-17",
+  "last_article_id": "ebe0937f-97e7-4eef-ac2d-afdfffe9a43f",
   "posted_article_ids_tattvaloka": [
     "LxvSluw91qtXEppxNP9T",
     "VWSw2W0nNUImZ1iSIwqq",
@@ -36,7 +36,8 @@
     "oLOxajjMhpeO7Kdazp00",
     "qaCiO39YNgAizvZgY136",
     "pQlrBRLdz2Z93lwe5eZN",
-    "KTdHW9CO2SgT2KYUPqar"
+    "KTdHW9CO2SgT2KYUPqar",
+    "M7o3X1RiApbXbpUMkcmT"
   ],
   "posted_article_ids_vedanta-kesari": [
     "lxATfLzE7g9KWfsxvjR9",
@@ -67,7 +68,9 @@
   "posted_article_ids_kalyan": [
     "35Glnnxlfgc6ZVCAqV4o"
   ],
-  "posted_article_ids_prabuddha-bharati": [],
-  "next_magazine": "prabuddha-bharati",
+  "posted_article_ids_prabuddha-bharati": [
+    "NqVAa5BW8osQACYpHFMk"
+  ],
+  "next_magazine": "vedanta-kesari",
   "next_image_language": "english"
 }
