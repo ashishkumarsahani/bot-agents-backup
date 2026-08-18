@@ -1,6 +1,6 @@
 {
-  "last_date": "2026-08-16",
-  "last_post_id": "4b877d20-42d2-4c2c-8cb2-342c5bcc0327",
+  "last_date": "2026-08-18",
+  "last_post_id": "1f54d6b9-24f8-4818-88e8-2d55c6ebd8cc",
   "posted_verse_ids": [
     "Patanjali Yoga Sutras_3_22",
     "Valmiki Ramayana_78_25",
@@ -41,7 +41,8 @@
     "Prashna Upanishad_6_2",
     "Narada Bhakti Sutra_3_7",
     "Katha Upanishad_1_29",
-    "BhagwadGita_Hindi_10_15"
+    "BhagwadGita_Hindi_10_15",
+    "BhagwadGita_Hindi_3_42"
   ],
-  "next_image_language": "english"
+  "next_image_language": "hindi"
 }

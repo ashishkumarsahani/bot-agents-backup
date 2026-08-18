@@ -43,7 +43,14 @@ logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 STATE_FILE = Path(__file__).parent / "magazine_article_state.json"
 
-MAGAZINE_ROTATION = ["tattvaloka", "vedanta-kesari", "kalyan", "prabuddha-bharati"]
+# Every magazine the bot may draw from. The daily run picks TWO at random from
+# whichever of these currently have articles (see run_daily), so a magazine with
+# no articles yet (e.g. freshly-added Chandamama before it's OCR'd/processed) is
+# simply skipped until it has content.
+MAGAZINE_ROTATION = [
+    "tattvaloka", "vedanta-kesari", "kalyan", "prabuddha-bharati",
+    "chandamama",
+]
 
 MAGAZINES = {
     "tattvaloka": {
@@ -121,6 +128,28 @@ MAGAZINES = {
         ),
         "creator_id_fallback": "7dbfcYZjHyBlzebJU8eI",
         "profile_image_url_fallback": "https://advaitaashrama.org/wp-content/uploads/PB-January-2023-Complete-for-Online-1-1.png",
+    },
+    # Newer magazines. They have no articles until their issues are OCR'd and
+    # processed in Creator-Tools-Web; until then run_daily's pool filter skips
+    # them. creator_id/profile resolve from creator_profiles (auto-created by the
+    # CTW process step) — the fallbacks below are only a last resort.
+    "chandamama": {
+        "slug": "chandamama",
+        "name": "Chandamama",
+        "name_hindi": "चंदामामा",
+        "bio": (
+            "Chandamama is the classic Indian children's magazine (1947–2013), "
+            "celebrated for its folklore, mythology, and moral tales in Hindi and English."
+        ),
+        "bio_hindi": (
+            "चंदामामा एक प्रसिद्ध भारतीय बाल पत्रिका (1947–2013) है, जो अपनी लोककथाओं, "
+            "पौराणिक कथाओं और नैतिक कहानियों के लिए जानी जाती है।"
+        ),
+        "cover_journal_desc": (
+            "the classic Indian children's magazine of folklore, mythology, and moral tales"
+        ),
+        "creator_id_fallback": "8Pnzmjlhkbdp1dzn6Kso",
+        "profile_image_url_fallback": "https://archive.org/services/img/Chandamama-English-1980-11",
     },
 }
 
@@ -1287,6 +1316,50 @@ Return ONLY valid JSON:
 
     # ----- DB write -----
 
+    # Per-category serene scene hints (text-free) for the localized cover art.
+    _COVER_SCENE_HINTS = {
+        "story":      "a serene cinematic scene depicting the key moment of the story — figures, setting, and mood, in a classical Indian devotional style",
+        "discourse":  "a sage or guru in a calm temple or a sacred landscape with soft mountains and still water",
+        "article":    "a serene scene representing the article's central subject — a deity, sage, sacred place, or idea — with soft mist and natural light",
+        "subhashita": "an elegant symbolic scene — a lamp, lotus, river, or sage — calm and refined with subtle ornamental detail",
+        "poem":       "a soft, lyrical devotional scene — light, lotus, or flame — with gentle mist and warm sunrise light",
+        "qna":        "a serene seeker-and-sage scene in a sacred natural setting with soft light",
+    }
+
+    def generate_localized_cover(self, title: str, category: str = "article"):
+        """Generate the localized Zen cover set via dhyanapp-services
+        POST /cover/generate-localized (ONE shared scene, per-language titles).
+
+        Returns (teaser_url_english, {language: url}) or (None, {}) on failure so
+        the caller can fall back to the legacy single-cover path."""
+        if not self.services_password:
+            logger.error("[cover] SERVICES_PASSWORD not available")
+            return None, {}
+        if not (title or "").strip():
+            return None, {}
+        hint = self._COVER_SCENE_HINTS.get(category, self._COVER_SCENE_HINTS["article"])
+        concept = f"{hint}. Evoke the theme of: {title}."
+        try:
+            resp = _requests.post(
+                f"{DHYANAPP_SERVICES_URL}/cover/generate-localized",
+                json={
+                    "title": title,
+                    "visual_concept": concept,
+                    "password": self.services_password,
+                    "size": "landscape",
+                    "quality": "medium",
+                },
+                timeout=300,
+            )
+            if resp.status_code != 200:
+                logger.error(f"[cover] localized endpoint HTTP {resp.status_code}: {resp.text[:200]}")
+                return None, {}
+            data = resp.json()
+            return data.get("teaserImageURL") or None, (data.get("localized_teaserImage") or {})
+        except Exception as e:
+            logger.error(f"[cover] localized cover generation failed: {e}")
+            return None, {}
+
     def push_article_to_db(
         self,
         article_data: dict,
@@ -1300,6 +1373,7 @@ Return ONLY valid JSON:
         english_duration_ms: int = 0,
         hindi_audio_url: Optional[str] = None,
         magazine_config: dict = None,
+        localized_teaser: dict = None,
     ) -> Optional[str]:
         if self.db is None:
             logger.error("[ERROR] MongoDB not connected")
@@ -1369,6 +1443,7 @@ Return ONLY valid JSON:
             "fullText": full_text,
             "teaserImageURL": image_url or "",
             "backgroundImageURL": image_url or "",
+            "localized_teaserImage": localized_teaser or {},
             "originalAuthorName": self.author_name,
             "originalAuthorURL": "",
             "AuthorProfileImageURL": self.author_profile_image_url,
@@ -1449,19 +1524,28 @@ Return ONLY valid JSON:
 
         article_id = str(uuid.uuid4())
 
-        assets = self.generate_cover_assets(source_article, article_data, image_language, magazine_config)
-        logger.info(f"Cover headline: {assets.get('headline', '')}")
-
-        selected_style = random.choice(COVER_IMAGE_STYLES)
-        logger.info(f"Cover style: {selected_style['name']}")
-
-        image_prompt = self.generate_cover_prompt(source_article, assets, selected_style, image_language, magazine_config)
-        logger.info("Generating cover image...")
-        image_url = self.generate_image(image_prompt, article_id)
+        # Localized Zen cover set (ONE shared artwork, per-language titles) via
+        # the dhyanapp-services /cover/generate-localized endpoint.
+        #   teaserImageURL        = English cover
+        #   localized_teaserImage = {language: url} for every language
+        logger.info("Generating localized cover set...")
+        category = source_article.get("category", "article")
+        image_url, localized_teaser = self.generate_localized_cover(
+            article_data.get("title", ""), category
+        )
         if image_url:
-            logger.info(f"Image URL: {image_url[:80]}...")
+            selected_style = {"name": "Zen Editorial Cover"}
+            logger.info(f"Cover teaser: {image_url[:70]}... ({len(localized_teaser)} localized languages)")
         else:
-            logger.warning("Publishing article without image")
+            # Fallback to the legacy single-cover path so the article still ships.
+            logger.warning("Localized cover failed — falling back to legacy cover")
+            assets = self.generate_cover_assets(source_article, article_data, image_language, magazine_config)
+            selected_style = random.choice(COVER_IMAGE_STYLES)
+            image_prompt = self.generate_cover_prompt(source_article, assets, selected_style, image_language, magazine_config)
+            image_url = self.generate_image(image_prompt, article_id)
+            localized_teaser = {}
+            if not image_url:
+                logger.warning("Publishing article without image")
 
         # ----- Hindi translation -----
         logger.info("Generating Hindi translation...")
@@ -1505,6 +1589,7 @@ Return ONLY valid JSON:
             english_duration_ms=english_duration_ms,
             hindi_audio_url=hindi_audio_url,
             magazine_config=magazine_config,
+            localized_teaser=localized_teaser,
         )
         if not doc_id:
             return None
@@ -1538,19 +1623,52 @@ Return ONLY valid JSON:
         logger.info(f"[SUCCESS] Article created: {doc_id}")
         return doc_id
 
+    def _magazines_with_articles(self) -> list:
+        """Slugs from MAGAZINE_ROTATION that currently have at least one source
+        article — the eligible pool for the day. Magazines not yet OCR'd/processed
+        (no articles) are skipped automatically."""
+        pool = []
+        for slug in MAGAZINE_ROTATION:
+            try:
+                if self._get_all_articles(slug):
+                    pool.append(slug)
+            except Exception as e:
+                logger.warning(f"[pool] {slug} availability check failed: {e}")
+        return pool
+
     def run_daily(self) -> Optional[str]:
         today_iso = date.today().isoformat()
         logger.info("=" * 60)
-        logger.info("MAGAZINE ARTICLE GENERATOR (Tattvaloka / Vedanta Kesari / Kalyan / Prabuddha Bharata)")
+        logger.info("MAGAZINE ARTICLE GENERATOR — 2 random magazines/day")
         logger.info(f"Date: {today_iso}")
         logger.info(f"Time: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}")
-        logger.info(f"Next magazine: {self.state.get('next_magazine', 'tattvaloka')}")
         logger.info("=" * 60)
 
         if not self._should_post_today():
             return None
 
-        return self.generate_and_publish(advance_state=True)
+        pool = self._magazines_with_articles()
+        if not pool:
+            logger.warning("No magazine has any articles available — nothing to publish today.")
+            return None
+
+        # Two random magazines per day (or one if only one has content).
+        picks = random.sample(pool, min(2, len(pool)))
+        logger.info(f"Today's magazines ({len(picks)} of {len(pool)} eligible): {picks}")
+
+        first_doc_id = None
+        published = 0
+        for slug in picks:
+            try:
+                doc_id = self.generate_and_publish(advance_state=True, magazine_slug=slug)
+                if doc_id:
+                    published += 1
+                    first_doc_id = first_doc_id or doc_id
+            except Exception as e:
+                logger.error(f"[{slug}] article generation failed: {e}", exc_info=True)
+
+        logger.info(f"[DONE] Published {published}/{len(picks)} article(s) today.")
+        return first_doc_id
 
 
 # Singleton

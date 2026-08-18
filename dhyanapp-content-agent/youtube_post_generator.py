@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import random
+import shutil
 import subprocess
 import sys
 import time
@@ -47,11 +48,45 @@ MONGODB_URI = os.getenv(
 DHYANAPP_SERVICES_URL = "https://services.dhyanapp.org"
 TRANSCRIPT_URL = f"{DHYANAPP_SERVICES_URL}/youtube/transcript"
 
-YT_DLP = "/home/admin/.local/bin/yt-dlp"
+def _resolve_yt_dlp() -> str:
+    """Locate the yt-dlp binary instead of assuming a single install path.
+
+    Order: $YT_DLP_PATH override -> PATH lookup -> common install dirs ->
+    bare 'yt-dlp' (resolved by subprocess via PATH as a last resort).
+    """
+    override = os.getenv("YT_DLP_PATH", "").strip()
+    if override and os.path.exists(override):
+        return override
+    found = shutil.which("yt-dlp")
+    if found:
+        return found
+    for cand in (
+        os.path.expanduser("~/.local/bin/yt-dlp"),
+        "/usr/local/bin/yt-dlp",
+        "/opt/homebrew/bin/yt-dlp",
+        "/home/admin/.local/bin/yt-dlp",
+    ):
+        if os.path.exists(cand):
+            return cand
+    return "yt-dlp"
+
+
+YT_DLP = _resolve_yt_dlp()
+# yt-dlp anti-block options (env-first; can be overridden per-run from Mongo secrets).
+# YT_DLP_PROXY: e.g. http://user:pass@host:port or socks5://host:port
+# YT_DLP_COOKIES: path to a cookies.txt exported for youtube.com
+# YT_DLP_COOKIES_FROM_BROWSER: e.g. chrome / firefox (yt-dlp --cookies-from-browser)
+YT_DLP_PROXY = os.getenv("YT_DLP_PROXY", "").strip()
+YT_DLP_COOKIES = os.getenv("YT_DLP_COOKIES", "").strip()
+YT_DLP_COOKIES_FROM_BROWSER = os.getenv("YT_DLP_COOKIES_FROM_BROWSER", "").strip()
+# Optional generic webhook for loud alerts (Slack-compatible {"text": ...} payload).
+ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "").strip()
+
 SHORTS_LIST_LIMIT = 15
 MAX_VIDEO_ATTEMPTS = 6
 COOLDOWN_DAYS = 3
 STATE_ID = "youtube_post_state"
+HEALTH_ID = "youtube_post_health"
 POST_HISTORY_LIMIT = 60
 GPT_MODEL = "gpt-5-mini"
 
@@ -60,36 +95,81 @@ def _now_ms() -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1000)
 
 
-def _list_channel_shorts(channel_handle: str) -> list[dict]:
-    """Return [{id,title}, ...] of recent shorts from a channel.
+def _yt_dlp_extra_args(
+    proxy: Optional[str] = None,
+    cookies: Optional[str] = None,
+    cookies_from_browser: Optional[str] = None,
+) -> list[str]:
+    """Build optional anti-block flags for yt-dlp from config."""
+    args: list[str] = []
+    proxy = proxy if proxy is not None else YT_DLP_PROXY
+    cookies = cookies if cookies is not None else YT_DLP_COOKIES
+    cfb = cookies_from_browser if cookies_from_browser is not None else YT_DLP_COOKIES_FROM_BROWSER
+    if proxy:
+        args += ["--proxy", proxy]
+    if cookies:
+        args += ["--cookies", cookies]
+    elif cfb:
+        args += ["--cookies-from-browser", cfb]
+    return args
 
-    channel_handle may be '@handle' or a full URL.
+
+def _looks_like_block(stderr: str) -> bool:
+    """True if yt-dlp stderr indicates YouTube bot-detection / IP blocking."""
+    s = (stderr or "").lower()
+    return any(
+        m in s
+        for m in (
+            "sign in to confirm",
+            "not a bot",
+            "http error 403",
+            "http error 429",
+            "blocked",
+            "captcha",
+            "unable to download webpage",
+        )
+    )
+
+
+def _list_channel_shorts(
+    channel_handle: str,
+    proxy: Optional[str] = None,
+    cookies: Optional[str] = None,
+    cookies_from_browser: Optional[str] = None,
+) -> tuple[list[dict], Optional[str]]:
+    """Return (videos, error) where videos is [{id,title}, ...] of recent shorts.
+
+    error is None on a clean listing (even if empty). On failure it is a short
+    string, prefixed with "BLOCK:" when the failure looks like YouTube
+    bot-detection / IP blocking. channel_handle may be '@handle' or a full URL.
     """
     handle = channel_handle.lstrip("@")
     url = f"https://www.youtube.com/@{handle}/shorts"
+    cmd = [
+        YT_DLP,
+        *_yt_dlp_extra_args(proxy, cookies, cookies_from_browser),
+        "--flat-playlist",
+        "--print",
+        "%(id)s\t%(title)s",
+        "--playlist-end",
+        str(SHORTS_LIST_LIMIT),
+        url,
+    ]
     try:
         result = subprocess.run(
-            [
-                YT_DLP,
-                "--flat-playlist",
-                "--print",
-                "%(id)s\t%(title)s",
-                "--playlist-end",
-                str(SHORTS_LIST_LIMIT),
-                url,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
+            cmd, capture_output=True, text=True, timeout=60
         )
+    except FileNotFoundError:
+        logger.error(f"[yt-dlp] binary not found at '{YT_DLP}' (set $YT_DLP_PATH)")
+        return [], f"yt-dlp not found at {YT_DLP}"
     except subprocess.TimeoutExpired:
         logger.warning(f"[yt-dlp] timeout listing {url}")
-        return []
+        return [], "timeout"
     if result.returncode != 0:
-        logger.warning(
-            f"[yt-dlp] failed listing {url}: {result.stderr.strip().splitlines()[-1:]}"
-        )
-        return []
+        last = (result.stderr.strip().splitlines() or [""])[-1]
+        logger.warning(f"[yt-dlp] failed listing {url}: {last}")
+        prefix = "BLOCK:" if _looks_like_block(result.stderr) else ""
+        return [], f"{prefix}{last[:200]}"
     out = []
     for line in result.stdout.strip().splitlines():
         if "\t" not in line:
@@ -97,7 +177,7 @@ def _list_channel_shorts(channel_handle: str) -> list[dict]:
         vid, title = line.split("\t", 1)
         if len(vid) == 11:
             out.append({"id": vid, "title": title})
-    return out
+    return out, None
 
 
 def _fetch_transcript(video_id: str) -> Optional[dict]:
@@ -147,6 +227,29 @@ class YouTubePostGenerator:
         self.accounts = get_all_personas()
         self._init_mongo()
         self._init_openai()
+        self._load_yt_settings()
+
+    def _load_yt_settings(self) -> None:
+        """Resolve yt-dlp anti-block settings: env first, then Mongo config/secrets."""
+        self.yt_proxy = YT_DLP_PROXY
+        self.yt_cookies = YT_DLP_COOKIES
+        self.yt_cookies_from_browser = YT_DLP_COOKIES_FROM_BROWSER
+        self.alert_webhook = ALERT_WEBHOOK_URL
+        try:
+            secrets = self.db["config"].find_one({"_id": "secrets"}) or {}
+        except Exception as e:
+            logger.warning(f"[config] could not load yt settings from Mongo: {e}")
+            secrets = {}
+        self.yt_proxy = self.yt_proxy or (secrets.get("YT_DLP_PROXY") or "").strip()
+        self.yt_cookies = self.yt_cookies or (secrets.get("YT_DLP_COOKIES") or "").strip()
+        self.yt_cookies_from_browser = self.yt_cookies_from_browser or (
+            secrets.get("YT_DLP_COOKIES_FROM_BROWSER") or ""
+        ).strip()
+        self.alert_webhook = self.alert_webhook or (secrets.get("ALERT_WEBHOOK_URL") or "").strip()
+        logger.info(
+            f"[yt-dlp] path={YT_DLP} proxy={'yes' if self.yt_proxy else 'no'} "
+            f"cookies={'yes' if (self.yt_cookies or self.yt_cookies_from_browser) else 'no'}"
+        )
 
     def _init_mongo(self) -> None:
         self.mongo_client = MongoClient(
@@ -178,7 +281,7 @@ class YouTubePostGenerator:
     def _save_state(self, state: dict) -> None:
         _db()["bot_config"].update_one(
             {"_id": STATE_ID},
-            {"$set": {"bots": state, "updated_at": datetime.utcnow()}},
+            {"$set": {"bots": state, "updated_at": datetime.now(timezone.utc)}},
             upsert=True,
         )
 
@@ -204,14 +307,34 @@ class YouTubePostGenerator:
 
     # ---- candidate selection ----
 
-    def _collect_candidates(self, bot_id: str, account: dict, posted_ids: set) -> list[dict]:
+    def _collect_candidates(
+        self, bot_id: str, account: dict, posted_ids: set
+    ) -> tuple[list[dict], dict]:
         channels = list(account.get("youtube_channels") or [])
         random.shuffle(channels)
         candidates: list[dict] = []
+        stats = {
+            "channels": len(channels),
+            "channels_ok": 0,          # returned a clean listing (may be empty)
+            "channels_with_videos": 0,
+            "errors": [],              # short "handle: error" strings
+            "blocked": False,          # any listing looked like an IP/bot block
+        }
         for handle in channels:
-            vids = _list_channel_shorts(handle)
-            if not vids:
+            vids, err = _list_channel_shorts(
+                handle,
+                proxy=self.yt_proxy,
+                cookies=self.yt_cookies,
+                cookies_from_browser=self.yt_cookies_from_browser,
+            )
+            if err:
+                stats["errors"].append(f"{handle}: {err}")
+                if err.startswith("BLOCK:") or err.startswith("yt-dlp not found"):
+                    stats["blocked"] = True
                 continue
+            stats["channels_ok"] += 1
+            if vids:
+                stats["channels_with_videos"] += 1
             for v in vids:
                 if v["id"] in posted_ids:
                     continue
@@ -219,7 +342,36 @@ class YouTubePostGenerator:
             if len(candidates) >= MAX_VIDEO_ATTEMPTS * 2:
                 break
         random.shuffle(candidates)
-        return candidates
+        return candidates, stats
+
+    # ---- health / alerts ----
+
+    def _record_health(self, status: str, detail: str, extra: Optional[dict] = None) -> None:
+        """Persist a heartbeat so stalls are detectable (last_success_at)."""
+        now = datetime.now(timezone.utc)
+        doc = {"status": status, "detail": detail, "updated_at": now}
+        if status == "ok":
+            doc["last_success_at"] = now
+        if extra:
+            doc.update(extra)
+        try:
+            _db()["bot_config"].update_one({"_id": HEALTH_ID}, {"$set": doc}, upsert=True)
+        except Exception as e:
+            logger.warning(f"[health] could not record health: {e}")
+
+    def _alert(self, subject: str, detail: str) -> None:
+        """Loud, monitorable alert for silent-stall conditions."""
+        logger.error(f"[ALERT] YouTube post bot: {subject} — {detail}")
+        if not self.alert_webhook:
+            return
+        try:
+            requests.post(
+                self.alert_webhook,
+                json={"text": f":warning: YouTube post bot: {subject}\n{detail}"},
+                timeout=10,
+            )
+        except Exception as e:
+            logger.warning(f"[alert] webhook post failed: {e}")
 
     def _already_posted_video_ids(self, bot_id: str, state: dict) -> set:
         ids: set = set(state.get(bot_id, {}).get("last_video_ids", []))
@@ -352,9 +504,31 @@ class YouTubePostGenerator:
         logger.info(f"Selected bot: {bot_id} ({account['name']})")
 
         posted_ids = self._already_posted_video_ids(bot_id, state)
-        candidates = self._collect_candidates(bot_id, account, posted_ids)
+        candidates, stats = self._collect_candidates(bot_id, account, posted_ids)
+        logger.info(
+            f"[listing] channels={stats['channels']} ok={stats['channels_ok']} "
+            f"with_videos={stats['channels_with_videos']} "
+            f"candidates={len(candidates)} errors={len(stats['errors'])}"
+        )
         if not candidates:
-            logger.warning(f"no candidate videos for {bot_id}")
+            # Distinguish a silent stall (blocking / all listings failing) from a
+            # genuine "nothing new to post" so monitoring can catch the former.
+            if stats["blocked"] or (stats["channels"] and stats["channels_ok"] == 0):
+                detail = (
+                    f"bot={bot_id}: all {stats['channels']} channel listings failed "
+                    f"(blocked={stats['blocked']}); errors: {'; '.join(stats['errors'][:5])}"
+                )
+                self._record_health(
+                    "blocked", detail, {"bot_id": bot_id, "errors": stats["errors"][:10]}
+                )
+                self._alert("channel listing blocked / failing", detail)
+            else:
+                logger.warning(f"no candidate videos for {bot_id}")
+                self._record_health(
+                    "no_candidates",
+                    f"bot={bot_id}: listings ok but no new videos to post",
+                    {"bot_id": bot_id},
+                )
             return None
 
         for idx, video in enumerate(candidates[:MAX_VIDEO_ATTEMPTS]):
@@ -395,9 +569,19 @@ class YouTubePostGenerator:
                 "last_post_id": post_id,
             }
             self._save_state(state)
+            self._record_health(
+                "ok", f"bot={bot_id} posted {post_id}",
+                {"bot_id": bot_id, "last_post_id": post_id},
+            )
             return post_id
 
+        detail = (
+            f"bot={bot_id}: tried {min(len(candidates), MAX_VIDEO_ATTEMPTS)} candidates, "
+            f"none produced a usable post (no transcript / generation failure)"
+        )
         logger.warning(f"exhausted {MAX_VIDEO_ATTEMPTS} candidates without a usable post")
+        self._record_health("exhausted", detail, {"bot_id": bot_id})
+        self._alert("exhausted candidates without a post", detail)
         return None
 
 
