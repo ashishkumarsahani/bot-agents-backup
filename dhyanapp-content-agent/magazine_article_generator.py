@@ -177,6 +177,33 @@ SARVAM_TTS_MODEL = "bulbul:v3"
 
 DHYANAPP_SERVICES_URL = "https://services.dhyanapp.org"
 
+# The /cover/generate-localized service returns localized_teaserImage keyed by
+# lowercase language NAME ("hindi", "bengali", ...). The app resolves images by ISO
+# locale (see primary_titles/sub_titles below and AppLanguage in DhyanApp
+# core/common/.../locale/LocaleManager.kt), so a name-keyed map is never found. Convert
+# to ISO codes before storing. Covers every AppLanguage entry; extras/unknowns pass
+# through lowercased so the map is also idempotent on already-coded input.
+_TEASER_LANG_NAME_TO_CODE = {
+    "assamese": "as", "bengali": "bn", "english": "en", "gujarati": "gu",
+    "hindi": "hi", "kannada": "kn", "malayalam": "ml", "marathi": "mr",
+    "odia": "or", "punjabi": "pa", "tamil": "ta", "telugu": "te",
+    "spanish": "es", "french": "fr", "italian": "it",
+}
+
+
+def _teaser_map_to_iso(localized: Optional[dict]) -> dict:
+    """Re-key a localized_teaserImage map from language name to ISO code.
+
+    Idempotent: an already-coded key ("en") isn't in the map and passes through
+    unchanged. Blank URLs are dropped."""
+    out: dict = {}
+    for name, url in (localized or {}).items():
+        key = str(name).strip().lower()
+        if not key or not url:
+            continue
+        out[_TEASER_LANG_NAME_TO_CODE.get(key, key)] = url
+    return out
+
 # Local AI TTS — free, offline, uses cloned voices via local-ai-tools
 LOCAL_AI_TTS_URL = os.getenv("LOCAL_AI_TTS_URL", "http://localhost:8507")
 LOCAL_AI_PASSWORD = os.getenv("LOCAL_AI_PASSWORD", "admin@6553")
@@ -1585,7 +1612,7 @@ Return ONLY valid JSON:
             "fullText": full_text,
             "teaserImageURL": image_url or "",
             "backgroundImageURL": image_url or "",
-            "localized_teaserImage": localized_teaser or {},
+            "localized_teaserImage": _teaser_map_to_iso(localized_teaser),
             "originalAuthorName": self.author_name,
             "originalAuthorURL": "",
             "AuthorProfileImageURL": self.author_profile_image_url,
