@@ -155,6 +155,11 @@ MAGAZINES = {
 
 ALLOWED_CATEGORIES = {"article", "discourse", "story", "subhashita", "poem", "qna"}
 
+# Script detectors for language-purity enforcement (English must have no
+# Devanagari; Hindi must have no Latin word-runs).
+_DEVANAGARI_RE = re.compile(r'[ऀ-ॿ]')
+_LATIN_RUN_RE = re.compile(r'[A-Za-z]{3,}')
+
 # Detect garbled PDF font encoding from legacy Indian fonts (Kruti Dev, Shivaji, etc.)
 # Patterns: letter+$+letter (H$m), opening brace+letter ({anw), letter+©, letter+«$
 _GARBLED_PATTERN = re.compile(
@@ -172,13 +177,13 @@ SARVAM_TTS_MODEL = "bulbul:v3"
 
 DHYANAPP_SERVICES_URL = "https://services.dhyanapp.org"
 
-# Local AI TTS (OmniVoice Studio) — free, offline, uses cloned voices
+# Local AI TTS — free, offline, uses cloned voices via local-ai-tools
 LOCAL_AI_TTS_URL = os.getenv("LOCAL_AI_TTS_URL", "http://localhost:8507")
 LOCAL_AI_PASSWORD = os.getenv("LOCAL_AI_PASSWORD", "admin@6553")
 USE_LOCAL_AUDIO = os.getenv("USE_LOCAL_AUDIO", "true").lower() == "true"
 
 # Cloned voice profiles — one is chosen randomly per article for both EN + HI.
-# Each voice is used for both languages (OmniVoice clones the timbre, not the language).
+# Each voice is used for both languages (cloned timbre, not language-specific).
 LOCAL_AI_VOICES = [
     ("eba63537", "Swami Atmashraddhananda"),
     ("73feaaa1", "Sw Suddhidhananda"),
@@ -315,7 +320,7 @@ def _strip_markdown_for_tts(text: str) -> str:
     text = re.sub(r'\n{3,}', '\n\n', text)                        # excess blank lines
 
     # Ensure each line ends with sentence-ending punctuation for TTS pauses.
-    # Convert Devanagari daṇḍa/double-daṇḍa to periods — OmniVoice (XTTS)
+    # Convert Devanagari daṇḍa/double-daṇḍa to periods — XTTS
     # doesn't recognise ।/॥ as sentence boundaries, so they produce no pause.
     text = text.replace("॥", ".").replace("।", ".")
     lines = []
@@ -363,6 +368,83 @@ def _get_audio_duration_ms(audio_bytes: bytes) -> int:
             os.unlink(tmp_path)
         except Exception:
             pass
+
+
+def _wav_bytes_to_mp3(wav_bytes: bytes) -> Optional[bytes]:
+    """Transcode WAV bytes to MP3 via ffmpeg (local TTS returns WAV;
+    the pipeline stores/plays MP3). Returns None on failure."""
+    wav_path = mp3_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+            f.write(wav_bytes)
+            wav_path = f.name
+        mp3_path = wav_path[:-4] + '.mp3'
+        subprocess.run(
+            ['ffmpeg', '-y', '-i', wav_path, '-codec:a', 'libmp3lame', '-qscale:a', '2', mp3_path],
+            check=True, capture_output=True, timeout=180,
+        )
+        with open(mp3_path, 'rb') as f:
+            return f.read()
+    except Exception as e:
+        logger.warning(f"[tts] wav->mp3 conversion failed: {e}")
+        return None
+    finally:
+        for p in (wav_path, mp3_path):
+            if p:
+                try:
+                    os.unlink(p)
+                except Exception:
+                    pass
+
+
+def _sentence_chunks(text: str, max_len: int = 800) -> list:
+    """Split text into <= max_len chunks at sentence/space boundaries."""
+    chunks, remaining = [], text.strip()
+    while len(remaining) > max_len:
+        idx = remaining.rfind('.', 0, max_len)
+        if idx == -1:
+            idx = remaining.rfind(' ', 0, max_len)
+        if idx == -1:
+            idx = max_len
+        chunks.append(remaining[:idx + 1].strip())
+        remaining = remaining[idx + 1:].strip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+def _concat_wavs_to_mp3(wav_buffers: list) -> Optional[bytes]:
+    """Concatenate WAV byte-buffers into one MP3 via ffmpeg (concat demuxer)."""
+    if not wav_buffers:
+        return None
+    if len(wav_buffers) == 1:
+        return _wav_bytes_to_mp3(wav_buffers[0])
+    import shutil
+    tmp = tempfile.mkdtemp()
+    try:
+        paths = []
+        for i, w in enumerate(wav_buffers):
+            p = os.path.join(tmp, f"chunk_{i}.wav")
+            with open(p, "wb") as f:
+                f.write(w)
+            paths.append(p)
+        lst = os.path.join(tmp, "concat.txt")
+        with open(lst, "w") as f:
+            for p in paths:
+                f.write(f"file '{p}'\n")
+        mp3 = os.path.join(tmp, "out.mp3")
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst,
+             "-c:a", "libmp3lame", "-q:a", "2", mp3],
+            capture_output=True, check=True,
+        )
+        with open(mp3, "rb") as f:
+            return f.read()
+    except Exception as e:
+        logger.warning(f"[tts] wav concat failed: {e}")
+        return None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 from bot_personas_store import get_persona
@@ -610,6 +692,53 @@ class MagazineArticleGenerator:
 
     # ----- LLM: generate article from source -----
 
+    def _purify_language(self, text: str, target_lang: str) -> str:
+        """Safety net: ensure `text` is purely in target_lang ('English' or
+        'Hindi'). Regex-gated — only when foreign script is actually present does
+        it spend one LLM pass to rewrite it, preserving Markdown + meaning."""
+        if not text or not text.strip():
+            return text
+        if target_lang == "English":
+            if not _DEVANAGARI_RE.search(text):
+                return text
+            instruction = (
+                "Rewrite the following text so it contains NO Devanagari, while preserving all content. "
+                "For any Sanskrit verse or quoted scripture in Devanagari, CONVERT it to IAST (Roman "
+                "diacritic transliteration) and keep it (you may add an English translation in parentheses). "
+                "For ordinary Hindi prose in Devanagari, translate it into English. Leave existing English "
+                "text and the Markdown structure unchanged. Output ONLY the corrected text — no commentary, "
+                "no code fences."
+            )
+        else:  # Hindi
+            scan = re.sub(r'https?://\S+', '', text)
+            if not _LATIN_RUN_RE.search(scan):
+                return text
+            instruction = (
+                "नीचे दिए गए पाठ को शुद्ध हिन्दी (केवल देवनागरी लिपि) में फिर से लिखें। सभी अंग्रेज़ी/रोमन "
+                "शब्दों का हिन्दी में अनुवाद करें या उन्हें देवनागरी में लिप्यंतरित करें। Markdown संरचना और "
+                "अर्थ को अक्षरशः बनाए रखें। केवल सुधारा हुआ पाठ लौटाएँ — कोई टिप्पणी नहीं, कोई code fence नहीं।"
+            )
+        try:
+            resp = self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You rewrite text into a single target language/script, preserving Markdown and meaning."},
+                    {"role": "user", "content": f"{instruction}\n\n---\n{text}"},
+                ],
+                temperature=0.2, max_tokens=2500,
+            )
+            record_openai_response(resp, service="magazine_article.purify")
+            out = (resp.choices[0].message.content or "").strip()
+            if out.startswith("```"):
+                parts = out.split("```")
+                out = parts[1] if len(parts) > 1 else out
+                out = re.sub(r'^(markdown|md|text)\n', '', out.strip())
+            logger.info(f"[purity] repaired {target_lang} text ({len(text)}→{len(out)} chars)")
+            return out.strip() or text
+        except Exception as e:
+            logger.warning(f"[purity] {target_lang} repair failed: {e}")
+            return text
+
     def generate_article_from_source(self, article: dict, magazine_config: dict) -> Optional[dict]:
         """
         Distil a magazine source article into a long-form Markdown article
@@ -684,7 +813,7 @@ STRUCTURE REQUIREMENTS:
 - Use `##` for section headings (2-4 sections)
 - Use bullet points or numbered lists where appropriate
 - Bold key terms or phrases with **bold**
-- No IAST transliteration; Devanagari script is fine if quoted verbatim from source
+- Write all prose in English. A Sanskrit verse or a short scriptural quotation MAY be included, but render it in IAST (Roman diacritic transliteration) — NOT Devanagari — and you may follow it with an English translation. Do NOT put ordinary Hindi prose in Devanagari; the English article must contain no Devanagari characters (verses appear as IAST).
 - End with a short reflective section (## Reflection or ## In Practice)
 - Do NOT add a byline, header label, or attribution line inside the body — those are stored separately
 
@@ -728,6 +857,9 @@ Return ONLY valid JSON:
                 data["description"] = summary[:200].rstrip() if summary else data["title"]
             if not (data.get("sub_title") or "").strip():
                 data["sub_title"] = f"From the {magazine_name} {month} edition" if month else f"From {magazine_name}"
+            # Enforce pure-English output (no Devanagari verses leaking through).
+            for k in ("title", "sub_title", "description", "full_text"):
+                data[k] = self._purify_language(data.get(k, ""), "English")
             return data
         except Exception as e:
             logger.error(f"[ERROR] Failed to generate article: {e}")
@@ -891,10 +1023,10 @@ Keep text short enough to render cleanly on a magazine cover. No quotation marks
         description = article_data.get("description", "")
         full_text = article_data.get("full_text", "")
 
-        prompt = f"""Translate the following article content into Hindi using ONLY Devanagari script.
+        prompt = f"""Translate the following article content into PURE Hindi, written entirely in Devanagari script.
 Preserve the Markdown structure exactly (## headings, **bold**, bullet points, numbered lists).
-Do not translate proper nouns, Sanskrit terms, or names — keep them in their original form.
-CRITICAL: Use ONLY Devanagari script for Hindi words. Do NOT use Cyrillic, Greek, or any other non-Latin script. English proper nouns may remain in Latin script.
+Translate EVERY English word into Hindi. Proper nouns, names and Sanskrit terms must be written in Devanagari (transliterate them into Devanagari — do NOT leave them in Latin/Roman letters).
+CRITICAL: The Hindi output MUST contain NO Latin/Roman letters and no other non-Devanagari script (no Cyrillic/Greek). Every word must be in Devanagari; only digits and Markdown symbols (#, *, -) may be non-Devanagari.
 
 Title: {title}
 Subtitle: {sub_title}
@@ -928,13 +1060,18 @@ Return ONLY valid JSON:
                 if content.startswith("json"):
                     content = content[4:]
                 content = content.strip()
-            return json.loads(content)
+            hindi = json.loads(content)
+            # Enforce pure-Hindi output (no stray English words in Devanagari text).
+            for k in ("title", "sub_title", "description", "full_text"):
+                if k in hindi:
+                    hindi[k] = self._purify_language(hindi.get(k, ""), "Hindi")
+            return hindi
         except Exception as e:
             logger.error(f"[ERROR] Hindi translation failed: {e}")
             return None
 
     def _local_tts(self, text: str, voice_id: str, language: str) -> Optional[bytes]:
-        """Generate audio via local OmniVoice TTS (free, offline).
+        """Generate audio via local-ai-tools TTS (free, offline).
 
         Uses cloned voice profiles — Ashish Sahani for English, Rituparna for Hindi.
         Returns MP3 bytes or None on failure.
@@ -944,37 +1081,42 @@ Return ONLY valid JSON:
         if not clean_text:
             return None
 
-        payload = {
-            "model": "tts-1",
-            "input": clean_text,
-            "voice": voice_id,
-            "language": language,
-            "response_format": "mp3",
-            "speed": 1.0,
-        }
+        # local-ai-tools TTS via /tts/speak (subprocess tts-venv on MPS)
+        # — the working path for the cloned voices. It 500s on very long inputs,
+        # so we CHUNK the text (like the Sarvam path), synthesize each chunk with
+        # the same clone voice, and concatenate the WAVs into one MP3 (keeping the
+        # pipeline's mp3 contract). (The old /v1/audio/speech route forwards to the
+        # No OmniVoice app dependency — runs the model directly as subprocess.)
+        chunks = _sentence_chunks(clean_text, 800)
+        wav_buffers = []
+        for ci, chunk in enumerate(chunks):
+            got = None
+            for attempt in range(1, 4):
+                try:
+                    response = _requests.post(
+                        f"{LOCAL_AI_TTS_URL}/tts/speak",
+                        json={"text": chunk, "voice": voice_id, "language": language, "speed": 1.0},
+                        headers={"Content-Type": "application/json", "X-Service-Password": LOCAL_AI_PASSWORD},
+                        timeout=300,
+                    )
+                    if response.status_code == 200 and len(response.content) > 100:
+                        got = response.content
+                        break
+                    logger.warning(f"Local AI TTS chunk {ci+1}/{len(chunks)} attempt {attempt}/3: HTTP {response.status_code}")
+                except Exception as e:
+                    logger.warning(f"Local AI TTS chunk {ci+1}/{len(chunks)} attempt {attempt}/3 failed: {e}")
+                if attempt < 3:
+                    time.sleep(3)
+            if got is None:
+                logger.warning(f"Local AI TTS: chunk {ci+1}/{len(chunks)} failed after retries — giving up")
+                return None
+            wav_buffers.append(got)
 
-        for attempt in range(1, 4):
-            try:
-                response = _requests.post(
-                    f"{LOCAL_AI_TTS_URL}/v1/audio/speech",
-                    json=payload,
-                    headers={
-                        "Content-Type": "application/json",
-                        "X-Service-Password": LOCAL_AI_PASSWORD,
-                    },
-                    timeout=300,
-                )
-                if response.status_code == 200 and len(response.content) > 100:
-                    logger.info(f"Local AI TTS succeeded on attempt {attempt} ({len(response.content)} bytes)")
-                    return response.content
-                else:
-                    logger.warning(f"Local AI TTS attempt {attempt}/3: HTTP {response.status_code}")
-            except Exception as e:
-                logger.warning(f"Local AI TTS attempt {attempt}/3 failed: {e}")
-            if attempt < 3:
-                time.sleep(3)
-
-        logger.warning("All 3 local AI TTS attempts failed")
+        mp3 = _concat_wavs_to_mp3(wav_buffers)
+        if mp3:
+            logger.info(f"Local AI TTS ({voice_id}) succeeded: {len(chunks)} chunk(s) → {len(mp3)} bytes mp3")
+            return mp3
+        logger.warning("Local AI TTS: wav→mp3 concat failed")
         return None
 
     def generate_english_audio(self, text: str) -> Optional[bytes]:

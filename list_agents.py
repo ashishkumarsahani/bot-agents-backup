@@ -4,10 +4,51 @@
 import json
 import subprocess
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 ENABLED_STATE_FILE = Path("/home/admin/bot_agents/dhyanapp-content-agent/agents_enabled.json")
+MONGODB_URI = os.getenv(
+    "MONGODB_URI",
+    "mongodb://dhyanadmin:Dhyan%40Mongo2026!@localhost:27017/dhyanapp?authSource=admin&replicaSet=rs0",
+)
+STALE_DAYS = 3  # flag a bot whose last successful post is older than this
+
+_mongo_db = None
+
+
+def _db():
+    """Best-effort Mongo handle (cached). Returns None if unreachable."""
+    global _mongo_db
+    if _mongo_db is None:
+        try:
+            from pymongo import MongoClient
+
+            client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=3000)
+            client.admin.command("ping")
+            _mongo_db = client["dhyanapp"]
+        except Exception:
+            _mongo_db = False  # sentinel: tried and failed
+    return None if _mongo_db is False else _mongo_db
+
+
+def get_health(health_id):
+    """Return (status, last_success_at, stale_bool) for a bot health doc, or None."""
+    db = _db()
+    if db is None:
+        return None
+    try:
+        doc = db["bot_config"].find_one({"_id": health_id})
+        if not doc:
+            return None
+        last = doc.get("last_success_at")
+        stale = True
+        if isinstance(last, datetime):
+            age_days = (datetime.now(timezone.utc) - last.replace(tzinfo=timezone.utc)).days
+            stale = age_days > STALE_DAYS
+        return doc.get("status"), last, stale
+    except Exception:
+        return None
 
 
 def load_enabled_state():
@@ -55,6 +96,26 @@ AGENTS = [
         "cron": "0 8 * * * (8:00 AM IST, alternate-day logic)",
         "log": "/home/admin/bot_agents/dhyanapp-content-agent/scripture_cron.log",
         "type": "cron",
+    },
+    {
+        "id": "youtube-post-bot",
+        "name": "YouTube Post Bot",
+        "description": "Reposts a Short from each persona's source channels as a video post with a persona-voiced reaction",
+        "script": "/home/admin/bot_agents/dhyanapp-content-agent/youtube_post_generator.py",
+        "cron": "Daily (per-bot 3-day cooldown)",
+        "log": "/home/admin/bot_agents/dhyanapp-content-agent/youtube_cron.log",
+        "type": "cron",
+        "health_id": "youtube_post_health",
+    },
+    {
+        "id": "youtube-community-bot",
+        "name": "YouTube Community Post Bot",
+        "description": "Mirrors the newest image post from each persona's Community-tab channels as a multi-image post (verbatim + attribution)",
+        "script": "/home/admin/bot_agents/dhyanapp-content-agent/youtube_community_post_generator.py",
+        "cron": "Daily (per-bot 3-day cooldown)",
+        "log": "/home/admin/bot_agents/dhyanapp-content-agent/youtube_community_cron.log",
+        "type": "cron",
+        "health_id": "youtube_community_health",
     },
     {
         "name": "Bot Engagement (Trigger)",
@@ -174,6 +235,17 @@ def main():
         print(f"     Status:   {status}")
         print(f"     Schedule: {agent['cron']}")
         print(f"     Script:   {agent['script']}")
+
+        # Optional Mongo-backed health heartbeat (last successful post)
+        health_id = agent.get("health_id")
+        if health_id:
+            health = get_health(health_id)
+            if health:
+                hstatus, last, stale = health
+                last_str = last.strftime("%Y-%m-%d %H:%M UTC") if isinstance(last, datetime) else "never"
+                color = "\033[91m" if stale else "\033[92m"
+                flag = "  <-- STALE" if stale else ""
+                print(f"     Health:   {color}last success {last_str}\033[0m (status={hstatus}){flag}")
         if os.path.exists(log_path):
             print(f"     Log:      {log_path} ({log_size})")
             last_line = get_log_tail(log_path)

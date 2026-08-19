@@ -4,6 +4,7 @@
   "gita-post-bot": true,
   "scripture-post-bot": true,
   "youtube-post-bot": true,
+  "youtube-community-bot": true,
   "magazine-article-bot": true,
   "magazine-post-bot": true,
   "festival-post-bot": false,
