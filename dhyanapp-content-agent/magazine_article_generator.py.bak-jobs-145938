@@ -1097,74 +1097,6 @@ Return ONLY valid JSON:
             logger.error(f"[ERROR] Hindi translation failed: {e}")
             return None
 
-    def _tts_job_chunk(self, chunk: str, voice_id: str, language: str,
-                       ci: int = 0, total: int = 1) -> Optional[bytes]:
-        """Synthesize one chunk through the local-ai job API; return WAV bytes.
-
-        Submit -> poll -> fetch. The poll budget is derived from the work (~4s a
-        word, 300s floor) rather than a fixed HTTP timeout, because the wait now
-        includes queueing behind other jobs as well as synthesis itself.
-        """
-        import hashlib
-        import time as _t
-
-        words = max(1, len(chunk.split()))
-        budget = min(3600, max(300, words * 4))
-        # Same text + voice returns the same job instead of re-synthesizing, so a
-        # retry after a transient network blip costs nothing.
-        key = hashlib.md5(f"{voice_id}|{language}|{chunk}".encode("utf-8")).hexdigest()
-        hdrs = {"Content-Type": "application/json", "X-Service-Password": LOCAL_AI_PASSWORD}
-
-        r = _requests.post(
-            f"{LOCAL_AI_TTS_URL}/tts/jobs",
-            json={"text": chunk, "voice": voice_id, "language": language,
-                  "speed": 1.0, "response_format": "wav", "idempotency_key": key},
-            headers=hdrs, timeout=30,
-        )
-        if r.status_code not in (200, 202):
-            logger.warning(f"Local AI TTS chunk {ci+1}/{total}: submit returned HTTP {r.status_code}")
-            return None
-        job_id = (r.json() or {}).get("job_id")
-        if not job_id:
-            logger.warning(f"Local AI TTS chunk {ci+1}/{total}: no job id returned")
-            return None
-
-        deadline = _t.time() + budget
-        status = None
-        while _t.time() < deadline:
-            _t.sleep(3)
-            try:
-                sr = _requests.get(f"{LOCAL_AI_TTS_URL}/tts/jobs/{job_id}",
-                                   headers=hdrs, timeout=20)
-                if sr.status_code != 200:
-                    continue
-                st = sr.json() or {}
-                status = st.get("status")
-                if status == "done":
-                    break
-                if status in ("error", "cancelled"):
-                    logger.warning(f"Local AI TTS chunk {ci+1}/{total}: job {status}: {st.get('error')}")
-                    return None
-            except Exception:
-                # A failed poll is not a failed job — keep waiting until the budget.
-                continue
-
-        if status != "done":
-            logger.warning(f"Local AI TTS chunk {ci+1}/{total}: job did not finish within {budget}s")
-            try:
-                _requests.delete(f"{LOCAL_AI_TTS_URL}/tts/jobs/{job_id}", headers=hdrs, timeout=10)
-            except Exception:
-                pass
-            return None
-
-        ar = _requests.get(f"{LOCAL_AI_TTS_URL}/tts/jobs/{job_id}/audio",
-                           headers=hdrs, timeout=180)
-        if ar.status_code == 200 and len(ar.content) > 100:
-            logger.info(f"Local AI TTS chunk {ci+1}/{total}: {len(ar.content)} bytes")
-            return ar.content
-        logger.warning(f"Local AI TTS chunk {ci+1}/{total}: audio fetch HTTP {ar.status_code}")
-        return None
-
     def _local_tts(self, text: str, voice_id: str, language: str) -> Optional[bytes]:
         """Generate audio via local-ai-tools TTS (free, offline).
 
@@ -1176,25 +1108,28 @@ Return ONLY valid JSON:
         if not clean_text:
             return None
 
-        # local-ai-tools TTS via the asynchronous job API (/tts/jobs).
-        #
-        # This used to POST /tts/speak and block. That endpoint is bounded by the
-        # gateway's TTS_TIMEOUT (120s) and the model runs at roughly 2s/word, so
-        # an 800-char chunk needed ~210s and returned 504 EVERY time -- chunk 1 of
-        # 6 failed, three retries burned ~130s each, and every article silently
-        # fell back to Sarvam. Jobs remove the ceiling: submission returns an id
-        # immediately and the audio is collected when the job reports done.
-        # Chunking is kept for progress granularity and steadier prosody, not to
-        # satisfy a timeout. 2026-08-21.
+        # local-ai-tools TTS via /tts/speak (subprocess tts-venv on MPS)
+        # — the working path for the cloned voices. It 500s on very long inputs,
+        # so we CHUNK the text (like the Sarvam path), synthesize each chunk with
+        # the same clone voice, and concatenate the WAVs into one MP3 (keeping the
+        # pipeline's mp3 contract). (The old /v1/audio/speech route forwards to the
+        # No OmniVoice app dependency — runs the model directly as subprocess.)
         chunks = _sentence_chunks(clean_text, 800)
         wav_buffers = []
         for ci, chunk in enumerate(chunks):
             got = None
             for attempt in range(1, 4):
                 try:
-                    got = self._tts_job_chunk(chunk, voice_id, language, ci, len(chunks))
-                    if got:
+                    response = _requests.post(
+                        f"{LOCAL_AI_TTS_URL}/tts/speak",
+                        json={"text": chunk, "voice": voice_id, "language": language, "speed": 1.0},
+                        headers={"Content-Type": "application/json", "X-Service-Password": LOCAL_AI_PASSWORD},
+                        timeout=300,
+                    )
+                    if response.status_code == 200 and len(response.content) > 100:
+                        got = response.content
                         break
+                    logger.warning(f"Local AI TTS chunk {ci+1}/{len(chunks)} attempt {attempt}/3: HTTP {response.status_code}")
                 except Exception as e:
                     logger.warning(f"Local AI TTS chunk {ci+1}/{len(chunks)} attempt {attempt}/3 failed: {e}")
                 if attempt < 3:
