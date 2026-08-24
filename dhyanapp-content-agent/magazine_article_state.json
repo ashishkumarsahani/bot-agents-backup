@@ -1,6 +1,6 @@
 {
-  "last_date": "2026-08-22",
-  "last_article_id": "854cd494-755a-45e0-9f0d-5b7786ef636a",
+  "last_date": "2026-08-24",
+  "last_article_id": "80204687-ecb4-49dd-936d-83486f5bcfcf",
   "posted_article_ids_tattvaloka": [
     "LxvSluw91qtXEppxNP9T",
     "VWSw2W0nNUImZ1iSIwqq",
@@ -71,14 +71,20 @@
   "posted_article_ids_kalyan": [
     "35Glnnxlfgc6ZVCAqV4o",
     "kTCeaA91CA61ww1gc12j",
-    "S4Xajc8Z2OGBTmnAaXXW"
+    "S4Xajc8Z2OGBTmnAaXXW",
+    "ryvkuLygE007ZEGa3bFq"
   ],
   "posted_article_ids_prabuddha-bharati": [
     "NqVAa5BW8osQACYpHFMk",
     "k6nH0Pd2GjvgIWHQiVKO",
     "H2vtapuBt93gvbmheCXC",
-    "BmOXEP8SLpceCXjn7NpH"
+    "BmOXEP8SLpceCXjn7NpH",
+    "BKGv5QyuM9DMBGUGDuHZ"
   ],
-  "next_magazine": "prabuddha-bharati",
-  "next_image_language": "english"
+  "next_magazine": "tattvaloka",
+  "next_image_language": "english",
+  "posted_article_ids_chandamama": [
+    "hNzUW7E8CshUxWsjx2D3",
+    "OJ1LcXNyWmSEsbSTbKD5"
+  ]
 }
