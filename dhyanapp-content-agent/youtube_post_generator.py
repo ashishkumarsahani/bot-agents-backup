@@ -88,7 +88,7 @@ COOLDOWN_DAYS = 3
 STATE_ID = "youtube_post_state"
 HEALTH_ID = "youtube_post_health"
 POST_HISTORY_LIMIT = 60
-GPT_MODEL = "gpt-5-mini"
+GPT_MODEL = "gpt-5.6-luna"
 
 
 def _now_ms() -> int:
