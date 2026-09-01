@@ -2,7 +2,7 @@
 
 Each bot persona has a list of source YouTube channels (stored in
 `dhyanapp.bot_personas.<id>.youtube_channels`). On each run we pick one
-eligible bot (cooldown = 3 days), list recent shorts from its channels via
+eligible bot (cooldown = 1 day), list recent shorts from its channels via
 yt-dlp, pull a transcript via the `/youtube/transcript` API, and ask
 gpt-5-mini to generate a post in the transcript's language, matching its
 tone. The post is written to MongoDB as a YouTube video post
@@ -84,11 +84,11 @@ ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "").strip()
 
 SHORTS_LIST_LIMIT = 15
 MAX_VIDEO_ATTEMPTS = 6
-COOLDOWN_DAYS = 3
+COOLDOWN_DAYS = 1
 STATE_ID = "youtube_post_state"
 HEALTH_ID = "youtube_post_health"
 POST_HISTORY_LIMIT = 60
-GPT_MODEL = "gpt-5.6-luna"
+GPT_MODEL = "gemma4:cloud"
 
 
 def _now_ms() -> int:
@@ -270,7 +270,7 @@ class YouTubePostGenerator:
             logger.warning(f"[config] could not load secrets from Mongo: {e}")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY not configured")
-        self.openai = OpenAI(api_key=api_key)
+        self.openai = OpenAI(api_key="ollama", base_url="http://localhost:11434/v1")
 
     # ---- state ----
 
@@ -430,14 +430,17 @@ class YouTubePostGenerator:
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                response_format={"type": "json_object"},
             )
         except Exception as e:
             logger.warning(f"[openai] generation failed: {e}")
             return None
         record_openai_response(resp, service="youtube_post.generate")
         try:
-            data = json.loads(resp.choices[0].message.content)
+            import re as _re
+            raw = resp.choices[0].message.content.strip()
+            raw = _re.sub(r"^```(?:json)?\s*\n?", "", raw)
+            raw = _re.sub(r"\n?```\s*$", "", raw)
+            data = json.loads(raw)
         except Exception as e:
             logger.warning(f"[openai] invalid json: {e}")
             return None

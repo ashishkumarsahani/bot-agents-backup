@@ -2,7 +2,7 @@
 
 Each bot persona has a list of source YouTube channels whose *Community/Posts*
 tab we mirror (`dhyanapp.bot_personas.<id>.community_channels`). On each run we
-pick one eligible bot (cooldown = 3 days), scrape the newest community post that
+pick one eligible bot (cooldown = 1 day), scrape the newest community post that
 has image(s) via YouTube's InnerTube API, re-host the image(s) on MinIO, and
 write a multi-image DhyanApp post that copies the original text verbatim with a
 `via @channel` attribution line.
@@ -74,7 +74,7 @@ YT_PROXY = os.getenv("YT_DLP_PROXY", "").strip()
 YT_COOKIES = os.getenv("YT_DLP_COOKIES", "").strip()  # path to cookies.txt
 ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "").strip()
 
-COOLDOWN_DAYS = 3
+COOLDOWN_DAYS = 1
 STATE_ID = "youtube_community_state"
 HEALTH_ID = "youtube_community_health"
 POST_HISTORY_LIMIT = 120

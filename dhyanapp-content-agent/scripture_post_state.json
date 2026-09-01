@@ -1,6 +1,6 @@
 {
-  "last_date": "2026-08-30",
-  "last_post_id": "ca95c825-6017-44d0-b633-8f47e50d8bb7",
+  "last_date": "2026-09-01",
+  "last_post_id": "b0daed78-6e30-41f4-b316-d7a5dae90779",
   "posted_verse_ids": [
     "Patanjali Yoga Sutras_3_22",
     "Valmiki Ramayana_78_25",
@@ -48,7 +48,8 @@
     "SrimadBhagavatam_RamakrishnaMath_69_40",
     "SrimadBhagavatam_RamakrishnaMath_164_45",
     "SrimadBhagavatam_GitaPress_231_17",
-    "Katha Upanishad_1_13"
+    "Katha Upanishad_1_13",
+    "SrimadBhagavatam_RamakrishnaMath_109_9"
   ],
-  "next_image_language": "hindi"
+  "next_image_language": "english"
 }
