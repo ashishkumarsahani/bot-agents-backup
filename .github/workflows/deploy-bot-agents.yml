@@ -1,0 +1,22 @@
+name: Deploy dhyanapp_bot_agents
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy-macbook:
+    runs-on: [self-hosted, bots-macbook]
+    timeout-minutes: 15
+    steps:
+      - name: Deploy + restart service (MacBook Pro)
+        run: /Users/epilepto/botagents-runner/deploy.sh
+
+  deploy-linux:
+    runs-on: [self-hosted, bots-linux]
+    timeout-minutes: 15
+    needs: deploy-macbook
+    steps:
+      - name: Sync checkout (epilepto-linux, no service)
+        run: /home/epilepto-dev/botagents-runner-l/deploy.sh
