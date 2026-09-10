@@ -323,10 +323,14 @@ Return ONLY the anecdote text."""
         if poster_name:
             people_to_tag.append(poster_name)
         tagged_us = self._tagged_us_user_ids(account, existing_comments or [])
+        # When replying, we're already threaded under this comment — don't tag its author again
+        reply_target_uid = reply_to_comment.get('createdBy') if reply_to_comment else None
         if existing_comments:
             for c in existing_comments[-4:]:
                 if c.get('createdBy') in tagged_us:
                     continue  # don't tag back someone who already tagged us
+                if c.get('createdBy') == reply_target_uid:
+                    continue  # don't tag the person we're directly replying to
                 commenter_name = self._get_commenter_name(c.get('createdBy'))
                 if commenter_name and commenter_name != account.get('name') and commenter_name not in people_to_tag:
                     people_to_tag.append(commenter_name)
@@ -349,11 +353,13 @@ You are: {account.get('name')}
         if reply_to_comment:
             reply_to_name = self._get_commenter_name(reply_to_comment.get('createdBy')) or "them"
             context += f"""
-You're replying to @{reply_to_name} who said:
+You're replying to {reply_to_name} who said:
 "{reply_to_comment.get('comment', '')}"
 {tag_instruction}
 
 Keep it casual! Agree, disagree, or add your take. Like chatting with a friend.
+Your reply is already threaded under {reply_to_name}'s comment, so do NOT tag or @mention {reply_to_name} — just respond to them directly.
+Do NOT ask {reply_to_name} a question or invite them to reply back — end with your own thought, not a question directed at them.
 """
         elif existing_comments:
             context += f"""
