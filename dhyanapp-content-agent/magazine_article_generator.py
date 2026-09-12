@@ -211,13 +211,14 @@ USE_LOCAL_AUDIO = os.getenv("USE_LOCAL_AUDIO", "true").lower() == "true"
 
 # Cloned voice profiles — one is chosen randomly per article for both EN + HI.
 # Each voice is used for both languages (cloned timbre, not language-specific).
+# RESTRICTED to A_Rated clones only (user directive 2026-09-12): un-rated legacy
+# voices (Vishwanath, Ashish, Rituparna, Ajay Chahal, Atmashraddhananda,
+# Suddhidhananda) and the B_Rated Vivek clone are NOT used for article audio.
 LOCAL_AI_VOICES = [
-    ("eba63537", "Swami Atmashraddhananda"),
-    ("73feaaa1", "Sw Suddhidhananda"),
-    ("49bd830a", "S Vishwanath"),
-    ("22f3ec30", "Ashish Sahani"),
-    ("87dd47b5", "Rituparna"),
-    ("d339aa34", "Ajay Chahal"),
+    ("d3d893af", "Yogesh_Hindi_Male_A_Rated"),
+    ("a7b3c69c", "Ramanad_Sagar_Voice_A_Rated"),
+    ("1138a2b3", "Samaya_Male_A_Rated"),
+    ("4772a560", "Bodhigana_Male_A_Rated"),
 ]
 ARTICLE_IMAGE_MODEL = "gpt-image-2"
 ARTICLE_IMAGE_SIZE = "1536x1024"   # landscape — magazine cover
@@ -424,8 +425,28 @@ def _wav_bytes_to_mp3(wav_bytes: bytes) -> Optional[bytes]:
                     pass
 
 
+def _ensure_terminal_punct(chunk: str) -> str:
+    """Append a full stop if the chunk doesn't end with terminal punctuation.
+
+    TTS prosody reads better when every chunk ends with a sentence-final
+    pause; a chunk cut mid-phrase otherwise runs straight into the next
+    chunk's audio. Handles Devanagari danda (।/॥) as terminal too.
+    """
+    stripped = chunk.rstrip()
+    if not stripped:
+        return chunk
+    if stripped[-1] in '.!?।॥:"\')】」】':
+        return chunk
+    return stripped + '.'
+
+
 def _sentence_chunks(text: str, max_len: int = 800) -> list:
-    """Split text into <= max_len chunks at sentence/space boundaries."""
+    """Split text into <= max_len chunks at sentence/space boundaries.
+
+    Every chunk is guaranteed to end with terminal punctuation (a full stop
+    is appended when the cut lands mid-sentence) so each TTS segment gets a
+    natural closing pause. User directive 2026-09-12.
+    """
     chunks, remaining = [], text.strip()
     while len(remaining) > max_len:
         idx = remaining.rfind('.', 0, max_len)
@@ -433,10 +454,10 @@ def _sentence_chunks(text: str, max_len: int = 800) -> list:
             idx = remaining.rfind(' ', 0, max_len)
         if idx == -1:
             idx = max_len
-        chunks.append(remaining[:idx + 1].strip())
+        chunks.append(_ensure_terminal_punct(remaining[:idx + 1].strip()))
         remaining = remaining[idx + 1:].strip()
     if remaining:
-        chunks.append(remaining)
+        chunks.append(_ensure_terminal_punct(remaining))
     return chunks
 
 
