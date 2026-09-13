@@ -156,3 +156,44 @@ def get_cover_style(name: str = None) -> dict:
         if s["name"].lower() == (name or "").strip().lower():
             return s
     return next(s for s in COVER_STYLE_COLLECTION if s["name"] == DEFAULT_COVER_STYLE)
+
+# ---------------------------------------------------------------------------
+# MongoDB-backed access (shared with Creator Tools Web / dhyanapp-services).
+# The Mongo collection `image_styles` is the source of truth once populated;
+# this module falls back to the static COVER_STYLE_COLLECTION above when Mongo
+# is unreachable, so the bot agent keeps working in isolation.
+# ---------------------------------------------------------------------------
+_mongo_cache = None
+_mongo_cache_ts = 0
+_MONGO_CACHE_TTL = 300  # 5 min
+
+
+def _load_from_mongo():
+    """Fetch active styles from the shared image_styles collection."""
+    global _mongo_cache, _mongo_cache_ts
+    import time as _t
+    now = _t.time()
+    if _mongo_cache is not None and now - _mongo_cache_ts < _MONGO_CACHE_TTL:
+        return _mongo_cache
+    try:
+        from pymongo import MongoClient
+        import os as _os
+        uri = _os.getenv("MONGODB_URI")
+        client = MongoClient(uri, serverSelectionTimeoutMS=3000)
+        docs = list(client.dhyanapp.image_styles.find({"isActive": True}).sort("sortOrder", 1))
+        if docs:
+            _mongo_cache = [{"name": d["name"], "suffix": d["promptSuffix"],
+                             "isDefault": d.get("isDefault", False)} for d in docs]
+            _mongo_cache_ts = now
+            return _mongo_cache
+    except Exception:
+        pass
+    return None
+
+
+def get_all_styles():
+    """All active styles: Mongo first, static fallback second."""
+    mongo = _load_from_mongo()
+    if mongo:
+        return mongo
+    return list(COVER_STYLE_COLLECTION)
