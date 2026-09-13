@@ -495,6 +495,206 @@ def _concat_wavs_to_mp3(wav_buffers: list) -> Optional[bytes]:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# -*- coding: utf-8 -*-
+# Sanskrit-aware article audio: split sections, chant shlokas via Vagdhenu,
+# speak prose via the existing clone-TTS path, concat with per-position gaps.
+#
+# Patch block for magazine_article_generator.py (bot agent, dhyanapp-content-agent).
+# Added 2026-09-13 per user directive: "Modify bot agents to identify Sanskrit
+# shlokas in all future articles and chant in same way" (Vagdhenu engine).
+
+# ---------------------------------------------------------------------------
+# Module-level constants (place after USE_LOCAL_AUDIO block)
+# ---------------------------------------------------------------------------
+LOCAL_AI_BASE = os.getenv("LOCAL_AI_BASE", "http://localhost:8507")
+
+_SANSKRIT_SPLIT_PROMPT = """You are an expert at parsing devotional articles for text-to-speech processing.
+
+Split the following {lang_word} article into an ordered list of sections. Rules:
+- A section is either PROSE (regular paragraphs; headings are spoken as part of the following prose) or SANSKRIT (Sanskrit shlokas/verses — typically blockquoted, often in IAST transliteration).
+- For SANSKRIT sections: output ONLY the Sanskrit verse text, converted to Devanagari. Never include its translation.
+- Keep the original order. Merge consecutive prose paragraphs into one prose section.
+- A blockquote that is a TRANSLATION of a verse (not the verse itself) is PROSE.
+- CRITICAL (user directive): verse text is TRANSLITERATED, never translated. If the {lang_word} article contains a
+  verse ONLY as a translation (no Sanskrit/IAST in the article), you MUST still emit a SANSKRIT section at that
+  position containing the ORIGINAL shloka in Devanagari — recall the source shloka from your knowledge of the
+  scripture named in the article (e.g. Kathopanishad → its actual shloka) — and DROP the translated-verse blockquote
+  from the prose. Never output a translation as a SANSKRIT section. If you cannot recall the exact shloka, still
+  emit the Devanagari Sanskrit rendering of the quoted lines (word-for-word Sanskrit, not a paraphrase).
+- Example: article says "The Kathopanishad says: > The Self is hidden in all beings..." → output
+  {{"type": "sanskrit", "text": "एष सर्वेषु भूतेषु गूढोऽत्मा न प्रकाशते; दृश्यते त्वग्रया बुद्ध्या सूक्ष्मया सूक्ष्मदर्शिभिः।"}}
+- Output STRICT JSON array only (no markdown fences, no commentary):
+[{{"type": "prose", "text": "..."}}, {{"type": "sanskrit", "text": "...Devanagari..."}}]
+
+ARTICLE:
+{article}
+"""
+
+
+def _looks_like_meta_response(text: str) -> bool:
+    """Detect gemma meta-commentary instead of actual work (long-input pitfall)."""
+    low = (text or "").strip().lower()
+    return (
+        low.startswith(("i will", "sure", "as a reminder", "please provide", "certainly"))
+        or "provide the article" in low
+        or "provide the transcript" in low
+    )
+
+
+def _split_sanskrit_sections(text: str, lang_word: str = "English") -> list:
+    """Split an article into ordered [{type: prose|sanskrit, text}] sections.
+
+    Returns a single prose section on any failure so callers degrade to the
+    plain-TTS path — never blocks article publication.
+    """
+    if not text or ("\"" not in text and "॥" not in text and "ṣ" not in text
+                    and "ś" not in text and "एष" not in text and "ॐ" not in text
+                    and "\n> " not in text and not text.startswith("> ")):
+        return [{"type": "prose", "text": text}]  # cheap pre-filter: no verse markers
+    prompt = _SANSKRIT_SPLIT_PROMPT.format(lang_word=lang_word, article=text)
+    payload = json.dumps({"model": "gemma4:cloud", "prompt": prompt, "stream": False,
+                          "options": {"temperature": 0.1, "num_predict": 8000}})
+    try:
+        resp = subprocess.run(
+            ["curl", "-s", "-m", "300", "http://localhost:11434/api/generate", "-d", "@-"],
+            input=payload, capture_output=True, text=True, timeout=320,
+        )
+        out = (json.loads(resp.stdout).get("response") or "").strip()
+        if not out or _looks_like_meta_response(out):
+            raise ValueError("gemma meta-response/empty")
+        sections = json.loads(out)
+        if not isinstance(sections, list) or not sections:
+            raise ValueError("bad split shape")
+        for s in sections:
+            if s.get("type") not in ("prose", "sanskrit") or not s.get("text", "").strip():
+                raise ValueError("bad section entry")
+        sanskrit_ct = sum(1 for s in sections if s["type"] == "sanskrit")
+        logger.info(f"[sanskrit-split] {len(sections)} sections ({sanskrit_ct} sanskrit)")
+        return sections
+    except Exception as e:
+        logger.warning(f"[sanskrit-split] failed ({e}) — falling back to plain TTS")
+        return [{"type": "prose", "text": text}]
+
+
+def _vagdhenu_chant(text: str) -> Optional[bytes]:
+    """Chant a Devanagari Sanskrit shloka via Vagdhenu (/sanskrit/chant).
+
+    Returns raw WAV bytes or None (callers fall back to clone TTS).
+    """
+    try:
+        r = requests.post(
+            f"{LOCAL_AI_TTS_URL}/sanskrit/chant",
+            json={"text": text},
+            headers={"X-Service-Password": LOCAL_AI_PASSWORD},
+            timeout=280,
+        )
+        if r.status_code == 200 and r.content[:4] == b"RIFF":
+            return r.content
+        logger.warning(f"[vagdhenu] chant HTTP {r.status_code}")
+    except Exception as e:
+        logger.warning(f"[vagdhenu] chant failed: {e}")
+    return None
+
+
+def _concat_sections_to_mp3(wav_list: list, gap_s: float = 0.4) -> Optional[bytes]:
+    """Concatenate section WAVs with a silence gap BETWEEN sections.
+
+    CRITICAL: create ONE anullsrc (silence) source PER position with unique
+    labels [g0..gN]. Reusing a single [gap] label across concat inputs makes
+    ffmpeg LOOP the infinite silence source — audio then restarts from the
+    top after each section (bug caught 2026-09-13: article replayed from the
+    beginning after the Sanskrit verse).
+    """
+    if not wav_list:
+        return None
+    if len(wav_list) == 1:
+        return _wav_bytes_to_mp3(wav_list[0])
+    import shutil
+    tmp = tempfile.mkdtemp()
+    try:
+        paths = []
+        for i, w in enumerate(wav_list):
+            p = os.path.join(tmp, f"sec_{i:03d}.wav")
+            with open(p, "wb") as f:
+                f.write(w)
+            paths.append(p)
+        inputs = []
+        for p in paths:
+            inputs += ["-i", p]
+        n = len(paths)
+        fc = ""
+        for i in range(n):
+            fc += f"[{i}:a]aresample=24000,aformat=channel_layouts=mono[a{i}];"
+        for i in range(n):
+            fc += f"anullsrc=r=24000:cl=mono,atrim=0:{gap_s}[g{i}];"
+        concat_in = "".join(f"[a{i}][g{i}]" for i in range(n))
+        fc += f"{concat_in}concat=n={n * 2}:v=0:a=1[out]"
+        mp3 = os.path.join(tmp, "out.mp3")
+        r = subprocess.run(
+            ["ffmpeg", "-y"] + inputs + ["-filter_complex", fc, "-map", "[out]",
+             "-codec:a", "libmp3lame", "-q:a", "2", mp3],
+            capture_output=True, timeout=300,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.decode()[-300:])
+        with open(mp3, "rb") as f:
+            return f.read()
+    except Exception as e:
+        logger.warning(f"[sanskrit] section concat failed: {e}")
+        return None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _generate_mixed_audio(self, text: str, voice_id: str, language: str,
+                          lang_word: str) -> Optional[bytes]:
+    """Sanskrit-aware audio: Vagdhenu chants for shloka sections, clone TTS
+    for prose, concat with gaps. Falls back to plain _local_tts behavior
+    (single prose stream) when there are no sanskrit sections or any step fails.
+    """
+    sections = _split_sanskrit_sections(text, lang_word)
+    sanskrit_ct = sum(1 for s in sections if s["type"] == "sanskrit")
+    if sanskrit_ct == 0:
+        return None  # caller falls back to the standard path
+
+    section_wavs = []
+    for idx, s in enumerate(sections):
+        stype, stext = s["type"], s["text"]
+        if stype == "sanskrit":
+            chant = _vagdhenu_chant(stext)
+            if chant:
+                section_wavs.append(chant)
+                logger.info(f"[sanskrit] section {idx + 1}: Vagdhenu chant ({len(chant)} bytes)")
+                continue
+            logger.warning(f"[sanskrit] section {idx + 1}: chant failed — speaking as prose")
+        clean = _strip_markdown_for_tts(stext)
+        if not clean:
+            continue
+        for chunk in _sentence_chunks(clean, 800):
+            got = None
+            for attempt in range(1, 4):
+                try:
+                    got = self._tts_job_chunk(chunk, voice_id, language, idx, len(sections))
+                    if got:
+                        break
+                except Exception as e:
+                    logger.warning(f"[sanskrit-mix] chunk attempt {attempt}/3 failed: {e}")
+                if attempt < 3:
+                    time.sleep(3)
+            if got is None:
+                logger.warning(f"[sanskrit-mix] chunk failed — aborting mixed path")
+                return None
+            section_wavs.append(got)
+
+    mp3 = _concat_sections_to_mp3(section_wavs)
+    if mp3:
+        logger.info(f"[sanskrit] mixed audio: {sanskrit_ct} chant(s), {len(section_wavs)} parts, {len(mp3)} bytes")
+        return mp3
+    return None
+
+
+
+
 from bot_personas_store import get_persona
 from pymongo import MongoClient
 from llm_usage_tracker import record_openai_response, record_usage
@@ -1242,6 +1442,9 @@ Return ONLY valid JSON:
             voice_id, voice_name = random.choice(LOCAL_AI_VOICES)
             self._current_voice = (voice_id, voice_name)
             logger.info(f"Trying local AI TTS ({voice_name}) for English...")
+            mixed = _generate_mixed_audio(self, text, voice_id, "en", "English")
+            if mixed:
+                return mixed
             audio = self._local_tts(text, voice_id, "en")
             if audio:
                 return audio
@@ -1440,6 +1643,9 @@ Return ONLY valid JSON:
         if USE_LOCAL_AUDIO:
             voice_id, voice_name = getattr(self, '_current_voice', random.choice(LOCAL_AI_VOICES))
             logger.info(f"Trying local AI TTS ({voice_name}) for Hindi...")
+            mixed = _generate_mixed_audio(self, text, voice_id, "hi", "Hindi")
+            if mixed:
+                return mixed
             audio = self._local_tts(text, voice_id, "hi")
             if audio:
                 return audio
