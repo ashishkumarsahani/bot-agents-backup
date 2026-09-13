@@ -14,6 +14,7 @@ State persisted in magazine_article_state.json beside this script:
 import base64
 import io
 import os
+import time
 import re
 import json
 import logging
@@ -208,6 +209,7 @@ def _teaser_map_to_iso(localized: Optional[dict]) -> dict:
 LOCAL_AI_TTS_URL = os.getenv("LOCAL_AI_TTS_URL", "http://localhost:8507")
 LOCAL_AI_PASSWORD = os.getenv("LOCAL_AI_PASSWORD", "admin@6553")
 USE_LOCAL_AUDIO = os.getenv("USE_LOCAL_AUDIO", "true").lower() == "true"
+USE_LOCALIZED_COVER_FALLBACK = os.getenv("USE_LOCALIZED_COVER_FALLBACK", "false").lower() == "true"
 
 # Cloned voice profiles — one is chosen randomly per article for both EN + HI.
 # Each voice is used for both languages (cloned timbre, not language-specific).
@@ -1787,6 +1789,88 @@ Return ONLY valid JSON:
         "qna":        "a serene seeker-and-sage scene in a sacred natural setting with soft light",
     }
 
+    # Classical Indian devotional painting style (user directive 2026-09-13):
+    # rich jewel tones, gold accents, scene occupies the right two-thirds, and the
+    # LEFT third is a smooth soft-white gradient (the app overlays localized titles
+    # there) — no text, no borders, no baked-in titles.
+    _PAINTING_STYLE_SUFFIX = (
+        "Classical Indian devotional painting style with rich jewel tones and gold accents. "
+        "The scene occupies the right two-thirds of the frame. The LEFT third must be a smooth, "
+        "soft plain white/ivory gradient (empty negative space — the app overlays the title there). "
+        "Absolutely NO text, no letters, no words, no logos, no watermarks, no borders, no frames."
+    )
+
+    @staticmethod
+    def _postprocess_cover_bytes(img_bytes: bytes) -> Optional[bytes]:
+        """Bottom ~10% crop (removes the gpt-image watermark) + left-third light fade.
+
+        Matches the approved teaser look: subtle white gradient over the LEFT ~18%
+        at <=55% opacity with ease-out (strength = 0.55 * t**1.5).
+        Returns JPEG bytes or None on failure.
+        """
+        try:
+            from PIL import Image
+            import io as _io
+            img = Image.open(_io.BytesIO(img_bytes)).convert("RGB")
+            w, h = img.size
+            # The gpt-image watermark sits in the bottom ~14% of the raw frame
+            # (verified by pixel scan) — crop 15% to clear it fully.
+            img = img.crop((0, 0, w, int(h * 0.85)))
+            w, h = img.size
+            overlay = Image.new("RGB", (w, h), (255, 255, 255))
+            mask = Image.new("L", (w, h), 0)
+            px = mask.load()
+            fade_w = max(1, int(w * 0.18))
+            for x in range(fade_w):
+                t = x / fade_w
+                strength = int(140 * ((1 - t) ** 1.5))
+                for y in range(h):
+                    px[x, y] = strength
+            img = Image.composite(overlay, img, mask)
+            out = _io.BytesIO()
+            img.save(out, "JPEG", quality=88)
+            return out.getvalue()
+        except Exception as e:
+            logger.warning(f"[cover] post-process failed: {e}")
+            return None
+
+    def generate_painting_cover(self, title: str, category: str = "article") -> Optional[str]:
+        """Generate ONE classical-painting cover (no baked text) via /image_1/generate,
+        post-process (watermark crop + left fade), upload, return the public URL."""
+        if not self.services_password:
+            logger.error("[cover] SERVICES_PASSWORD not available")
+            return None
+        if not (title or "").strip():
+            return None
+        hint = self._COVER_SCENE_HINTS.get(category, self._COVER_SCENE_HINTS["article"])
+        prompt = (f"A serene cinematic scene: {hint}. Evoke the theme of: {title}. "
+                  f"{self._PAINTING_STYLE_SUFFIX}")
+        try:
+            resp = _requests.post(
+                f"{DHYANAPP_SERVICES_URL}/image_1/generate",
+                json={"prompt": prompt, "password": self.services_password,
+                      "size": "landscape", "quality": "medium"},
+                timeout=180,
+            )
+            if resp.status_code != 200 or not resp.content:
+                logger.error(f"[cover] image_1 HTTP {resp.status_code}")
+                return None
+            processed = self._postprocess_cover_bytes(resp.content)
+            if not processed:
+                return None
+            article_id = f"cover_{int(time.time())}"
+            object_key = f"Knowledge/ArticleBot/{article_id}/poster_image.jpg"
+            self.s3_client.put_object(
+                Bucket=MINIO_BUCKET, Key=object_key, Body=processed,
+                ContentType="image/jpeg",
+            )
+            base_url = MINIO_PUBLIC_URL if MINIO_PUBLIC_URL else f"http://{MINIO_ENDPOINT}"
+            logger.info(f"[cover] painting cover uploaded: {object_key}")
+            return f"{base_url}/{MINIO_BUCKET}/{object_key}"
+        except Exception as e:
+            logger.error(f"[cover] painting cover failed: {e}")
+            return None
+
     def generate_localized_cover(self, title: str, category: str = "article"):
         """Generate the localized Zen cover set via dhyanapp-services
         POST /cover/generate-localized (ONE shared scene, per-language titles).
@@ -1989,17 +2073,27 @@ Return ONLY valid JSON:
         # the dhyanapp-services /cover/generate-localized endpoint.
         #   teaserImageURL        = English cover
         #   localized_teaserImage = {language: url} for every language
-        logger.info("Generating localized cover set...")
+        logger.info("Generating classical painting cover (no baked text)...")
         category = source_article.get("category", "article")
-        image_url, localized_teaser = self.generate_localized_cover(
-            article_data.get("title", ""), category
-        )
+        # User directive 2026-09-13: classical Indian devotional painting style,
+        # scene right 2/3, LEFT third soft-white gradient for app title overlay,
+        # no baked-in text. One shared artwork serves all languages.
+        image_url = self.generate_painting_cover(article_data.get("title", ""), category)
+        localized_teaser = {}
         if image_url:
-            selected_style = {"name": "Zen Editorial Cover"}
-            logger.info(f"Cover teaser: {image_url[:70]}... ({len(localized_teaser)} localized languages)")
-        else:
-            # Fallback to the legacy single-cover path so the article still ships.
-            logger.warning("Localized cover failed — falling back to legacy cover")
+            selected_style = {"name": "Classical Devotional Painting"}
+            logger.info(f"Cover teaser: {image_url[:70]}...")
+        elif USE_LOCALIZED_COVER_FALLBACK:
+            # Optional legacy path (disabled by default): localized Zen set.
+            image_url, localized_teaser = self.generate_localized_cover(
+                article_data.get("title", ""), category
+            )
+            if image_url:
+                selected_style = {"name": "Zen Editorial Cover"}
+                logger.info(f"Cover teaser: {image_url[:70]}... ({len(localized_teaser)} localized languages)")
+        if not image_url:
+            # Last resort: legacy single-cover path so the article still ships.
+            logger.warning("Painting cover failed — falling back to legacy cover")
             assets = self.generate_cover_assets(source_article, article_data, image_language, magazine_config)
             selected_style = random.choice(COVER_IMAGE_STYLES)
             image_prompt = self.generate_cover_prompt(source_article, assets, selected_style, image_language, magazine_config)
