@@ -697,6 +697,7 @@ def _generate_mixed_audio(self, text: str, voice_id: str, language: str,
 
 
 
+from cover_styles import COVER_STYLE_COLLECTION, get_cover_style, DEFAULT_COVER_STYLE
 from bot_personas_store import get_persona
 from pymongo import MongoClient
 from llm_usage_tracker import record_openai_response, record_usage
@@ -1843,8 +1844,12 @@ Return ONLY valid JSON:
         if not (title or "").strip():
             return None
         hint = self._COVER_SCENE_HINTS.get(category, self._COVER_SCENE_HINTS["article"])
+        # User directive 2026-09-13: pick a style at RANDOM from the collection
+        style = random.choice(COVER_STYLE_COLLECTION)
+        self._last_cover_style_name = style["name"]
+        logger.info(f"[cover] style: {style['name']}")
         prompt = (f"A serene cinematic scene: {hint}. Evoke the theme of: {title}. "
-                  f"{self._PAINTING_STYLE_SUFFIX}")
+                  f"{style['suffix']}")
         try:
             resp = _requests.post(
                 f"{DHYANAPP_SERVICES_URL}/image_1/generate",
@@ -2081,7 +2086,7 @@ Return ONLY valid JSON:
         image_url = self.generate_painting_cover(article_data.get("title", ""), category)
         localized_teaser = {}
         if image_url:
-            selected_style = {"name": "Classical Devotional Painting"}
+            selected_style = {"name": random.choice(COVER_STYLE_COLLECTION)["name"] if False else getattr(self, "_last_cover_style_name", "Classical Devotional Painting")}
             logger.info(f"Cover teaser: {image_url[:70]}...")
         elif USE_LOCALIZED_COVER_FALLBACK:
             # Optional legacy path (disabled by default): localized Zen set.
