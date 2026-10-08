@@ -20,3 +20,10 @@ jobs:
     steps:
       - name: Sync checkout (epilepto-linux, no service)
         run: /home/epilepto-dev/botagents-runner-l/deploy.sh
+
+  deploy-bangalore:
+    runs-on: [self-hosted, linux-bgl]
+    needs: deploy-macbook
+    steps:
+      - name: Deploy + restart service (epilepto-linux-1 Bangalore, bot-agents)
+        run: /home/epilepto-dev/botagents-runner-b/deploy.sh
