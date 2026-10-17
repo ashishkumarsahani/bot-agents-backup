@@ -52,6 +52,7 @@ DHYANAPP_SERVICES_URL = "https://services.dhyanapp.org"
 from pymongo import MongoClient
 
 from llm_usage_tracker import record_openai_response
+import claude_mini
 import boto3
 from botocore.client import Config as BotoConfig
 
@@ -375,17 +376,15 @@ PREFER specific queries like "{source} teaching on [specific concept]" or "{sour
 Return ONLY the search query text, nothing else. Keep it under 15 words."""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {"role": "system", "content": "You generate focused search queries for finding spiritual quotes."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.8,
-                max_tokens=50
+                max_tokens=4096,
+                service="persona_quote.search_query",
             )
-            record_openai_response(response, service="persona_quote.search_query")
-            query = response.choices[0].message.content.strip().strip('"\'')
+            query = response.strip().strip('"\'')
             logger.info(f"Generated quote search query: {query} (source: {source})")
             return query, source
         except Exception as e:
@@ -457,18 +456,17 @@ If you cannot find a genuine quote in the results, set is_authentic to false.
 Return ONLY valid JSON."""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {"role": "system", "content": "You extract authentic spiritual quotes from search results."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3,
-                max_tokens=300
+                max_tokens=4096,
+                service="persona_quote.extract_authentic",
+                json_mode=True,
             )
-            record_openai_response(response, service="persona_quote.extract_authentic")
 
-            content = response.choices[0].message.content.strip()
+            content = response.strip()
             if content.startswith("```"):
                 content = content.split("```")[1]
                 if content.startswith("json"):
@@ -525,18 +523,17 @@ Return JSON:
 Return ONLY valid JSON."""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {"role": "system", "content": f"You create profound spiritual quotes inspired by {source}'s teachings."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.9,
-                max_tokens=300
+                max_tokens=4096,
+                service="persona_quote.generate",
+                json_mode=True,
             )
-            record_openai_response(response, service="persona_quote.generate")
 
-            content = response.choices[0].message.content.strip()
+            content = response.strip()
             if content.startswith("```"):
                 content = content.split("```")[1]
                 if content.startswith("json"):
@@ -584,17 +581,15 @@ Guidelines:
 Return ONLY the commentary text."""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {"role": "system", "content": f"You are {account['name']}, writing a personal reflection on a spiritual quote."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.85,
-                max_tokens=200
+                max_tokens=4096,
+                service="persona_quote.commentary",
             )
-            record_openai_response(response, service="persona_quote.commentary")
-            commentary = response.choices[0].message.content.strip()
+            commentary = response.strip()
             return commentary
         except Exception as e:
             logger.error(f"[ERROR] Failed to generate commentary: {e}")

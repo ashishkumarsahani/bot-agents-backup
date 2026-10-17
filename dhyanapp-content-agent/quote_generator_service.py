@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 
 from vector_store_service import get_vector_store_service
 from llm_usage_tracker import record_openai_response
+import claude_mini
 
 load_dotenv()
 
@@ -28,7 +29,7 @@ class QuoteGeneratorService:
         """Initialize the quote generator service."""
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.vector_store = get_vector_store_service()
-        self.model = "gpt-4o-mini"
+        self.model = claude_mini.MODEL
 
     def generate_quote_from_chunks(self, num_chunks: int = 3) -> Optional[dict]:
         """
@@ -73,8 +74,7 @@ Important:
 Return ONLY the JSON, no other text."""
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
+            response = claude_mini.chat(
                 messages=[
                     {
                         "role": "system",
@@ -85,13 +85,13 @@ Return ONLY the JSON, no other text."""
                         "content": prompt
                     }
                 ],
-                temperature=0.8,
-                max_tokens=500
+                max_tokens=4096,
+                service="quote_generator",
+                json_mode=True,
             )
-            record_openai_response(response, service="quote_generator")
 
             # Parse the response
-            content = response.choices[0].message.content.strip()
+            content = response.strip()
 
             # Clean up JSON if wrapped in markdown
             if content.startswith("```"):
@@ -164,8 +164,7 @@ Important:
 Return ONLY the JSON, no other text."""
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
+            response = claude_mini.chat(
                 messages=[
                     {
                         "role": "system",
@@ -176,13 +175,13 @@ Return ONLY the JSON, no other text."""
                         "content": prompt
                     }
                 ],
-                temperature=0.8,
-                max_tokens=500
+                max_tokens=4096,
+                service="quote_generator",
+                json_mode=True,
             )
-            record_openai_response(response, service="quote_generator")
 
             # Parse the response
-            content = response.choices[0].message.content.strip()
+            content = response.strip()
 
             # Clean up JSON if wrapped in markdown
             if content.startswith("```"):

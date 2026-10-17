@@ -50,6 +50,7 @@ DHYANAPP_SERVICES_URL = "https://services.dhyanapp.org"
 from pymongo import MongoClient
 
 from llm_usage_tracker import record_openai_response
+import claude_mini
 import boto3
 from botocore.client import Config as BotoConfig
 
@@ -354,18 +355,17 @@ Return JSON format:
 Return ONLY valid JSON."""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {"role": "system", "content": f"You are {account['name']}, sharing festival wishes in your unique spiritual voice."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.8,
-                max_tokens=800
+                max_tokens=4096,
+                service="persona_post.festival",
+                json_mode=True,
             )
-            record_openai_response(response, service="persona_post.festival")
 
-            content = response.choices[0].message.content.strip()
+            content = response.strip()
 
             # Clean JSON
             if content.startswith("```"):
@@ -486,17 +486,15 @@ PREFER queries like "How {selected_saint} [specific event]" or "{selected_saint}
 Return ONLY the search query text, nothing else. Keep it under 15 words."""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {"role": "system", "content": "You generate focused search queries for finding spiritual stories and teachings."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.9,
-                max_tokens=50
+                max_tokens=4096,
+                service="persona_post.search_query",
             )
-            record_openai_response(response, service="persona_post.search_query")
-            query = response.choices[0].message.content.strip()
+            query = response.strip()
             query = query.strip('"\'')
             logger.info(f"Generated search query: {query}")
             return query
@@ -598,18 +596,17 @@ Return JSON format:
 Return ONLY valid JSON."""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {"role": "system", "content": f"You are {account['name']}, writing spiritual posts in your unique voice."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.8,
-                max_tokens=800
+                max_tokens=4096,
+                service="persona_post.from_search",
+                json_mode=True,
             )
-            record_openai_response(response, service="persona_post.from_search")
 
-            content = response.choices[0].message.content.strip()
+            content = response.strip()
 
             # Clean JSON
             if content.startswith("```"):

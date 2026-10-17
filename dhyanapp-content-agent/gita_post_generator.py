@@ -54,6 +54,7 @@ from bot_personas_store import get_persona
 from pymongo import MongoClient
 
 from llm_usage_tracker import record_openai_response, record_usage
+import claude_mini
 import boto3
 from botocore.client import Config as BotoConfig
 
@@ -402,17 +403,16 @@ Return ONLY valid JSON:
 }}"""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {"role": "system", "content": "You write devotional, commentary-grounded English reflections on Bhagavad Gita verses in a warm first-person voice. Always return valid JSON."},
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.8,
-                max_tokens=1100,
+                max_tokens=4096,
+                service="gita_post.from_verse",
+                json_mode=True,
             )
-            record_openai_response(response, service="gita_post.from_verse")
-            content = response.choices[0].message.content.strip()
+            content = response.strip()
             if content.startswith("```"):
                 content = content.split("```")[1]
                 if content.startswith("json"):
@@ -468,17 +468,16 @@ Return ONLY valid JSON:
 
         for attempt in range(1, 3):
             try:
-                response = self.client.chat.completions.create(
-                    model="gpt-4o-mini",
+                response = claude_mini.chat(
                     messages=[
                         {"role": "system", "content": "You are a Bhagavad Gita scholar. Always return valid JSON only."},
                         {"role": "user", "content": prompt},
                     ],
-                    temperature=0.1,
-                    max_tokens=2000,
+                    max_tokens=4096,
+                    service="gita_post.detect_speaker_batch",
+                    json_mode="array",
                 )
-                record_openai_response(response, service="gita_post.detect_speaker_batch")
-                content = response.choices[0].message.content.strip()
+                content = response.strip()
                 if content.startswith("```"):
                     content = content.split("```")[1]
                     if content.startswith("json"):
@@ -635,17 +634,16 @@ Return ONLY valid JSON with exactly these three keys:
 Keep text short enough to render cleanly on a poster. No quotation marks inside values."""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {"role": "system", "content": "You craft concise poster text for spiritual infographics. Always return valid JSON."},
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.6,
-                max_tokens=300,
+                max_tokens=4096,
+                service="gita_post.infographic_assets",
+                json_mode=True,
             )
-            record_openai_response(response, service="gita_post.infographic_assets")
-            content = response.choices[0].message.content.strip()
+            content = response.strip()
             if content.startswith("```"):
                 content = content.split("```")[1]
                 if content.startswith("json"):

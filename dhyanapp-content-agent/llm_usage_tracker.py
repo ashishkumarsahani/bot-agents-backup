@@ -1,7 +1,7 @@
 """
 Local mirror of dhyanapp-services llm_usage_tracker.
 
-Writes one document per OpenAI API call to MongoDB collection `llm_usage`
+Writes one document per OpenAI / Anthropic API call to MongoDB collection `llm_usage`
 in the same `dhyanapp` database used elsewhere in this repo. Schema and
 pricing tables match dhyanapp-services/utils/llm_usage_tracker.py so usage
 from this repo aggregates with the rest of the platform.
@@ -61,15 +61,19 @@ OPENAI_PRICING = {
     "dall-e-2":                {"per_image": 0.02},
 }
 
+ANTHROPIC_PRICING = {
+    "claude-haiku-5-5":        {"input": 0.10,  "output": 0.50},
+}
 
-def _pricing_for(model):
+
+def _pricing_for(model, table=OPENAI_PRICING):
     if not model:
         return {}
-    if model in OPENAI_PRICING:
-        return OPENAI_PRICING[model]
-    candidates = [k for k in OPENAI_PRICING if model.startswith(k)]
+    if model in table:
+        return table[model]
+    candidates = [k for k in table if model.startswith(k)]
     if candidates:
-        return OPENAI_PRICING[max(candidates, key=len)]
+        return table[max(candidates, key=len)]
     return {}
 
 
@@ -99,7 +103,12 @@ def record_usage(
         coll = _collection()
         if coll is None:
             return
-        pricing = _pricing_for(model) if provider == "openai" else {}
+        if provider == "openai":
+            pricing = _pricing_for(model)
+        elif provider == "anthropic":
+            pricing = _pricing_for(model, ANTHROPIC_PRICING)
+        else:
+            pricing = {}
         if cost_usd is None:
             cost_usd = _calc_cost(pricing, prompt_tokens, completion_tokens, images)
 
@@ -145,6 +154,30 @@ def record_openai_response(response, *, service, meta=None):
         )
     except Exception:
         logger.exception("record_openai_response failed (service=%s)", service)
+
+
+def record_anthropic_response(response, *, service, meta=None):
+    """Pull `.usage` off an Anthropic Messages response and log it."""
+    try:
+        if response is None:
+            return
+        usage = getattr(response, "usage", None)
+        model = getattr(response, "model", "unknown")
+        if usage is None:
+            return
+        prompt_tokens = (
+            (getattr(usage, "input_tokens", 0) or 0)
+            + (getattr(usage, "cache_creation_input_tokens", 0) or 0)
+            + (getattr(usage, "cache_read_input_tokens", 0) or 0)
+        )
+        record_usage(
+            "anthropic", model, service,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=getattr(usage, "output_tokens", 0) or 0,
+            meta=meta,
+        )
+    except Exception:
+        logger.exception("record_anthropic_response failed (service=%s)", service)
 
 
 def record_openai_image(*, model, service, n=1, meta=None):

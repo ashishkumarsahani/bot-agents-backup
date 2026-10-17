@@ -25,6 +25,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 from llm_usage_tracker import record_openai_response
+import claude_mini
 import firebase_admin
 from firebase_admin import credentials, firestore, storage
 
@@ -210,14 +211,12 @@ class UserPostEngagementService:
         messages.append({"role": "user", "content": content})
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=messages,
-                max_tokens=200,
-                temperature=0.5
+                max_tokens=4096,
+                service="user_engagement.analyze",
             )
-            record_openai_response(response, service="user_engagement.analyze")
-            analysis = response.choices[0].message.content.strip()
+            analysis = response.strip()
             logger.info(f"Post analysis: {analysis[:100]}...")
             return analysis
         except Exception as e:
@@ -343,17 +342,15 @@ AVOID:
 Return ONLY the comment text."""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {"role": "system", "content": f"You are {account['name']}, a genuine spiritual seeker and mentor. You engage naturally and thoughtfully, sharing from your own journey."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.85,
-                max_tokens=200
+                max_tokens=4096,
+                service="user_engagement.comment",
             )
-            record_openai_response(response, service="user_engagement.comment")
-            comment = response.choices[0].message.content.strip()
+            comment = response.strip()
             comment = comment.strip('"\'')
             return comment
         except Exception as e:

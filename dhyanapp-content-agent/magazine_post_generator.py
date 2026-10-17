@@ -7,7 +7,7 @@ social posts on an alternate-day schedule (skips if last post was < 2 days ago).
 Publishes under the Gita bot's user_id but with its own display name "Tattvaloka"
 (persona key "tattvaloka" in bot_personas).
 
-LLM pipeline (gpt-4o-mini):
+LLM pipeline (claude-haiku-5-5 via claude_mini):
   1. generate_post_from_article (temp=0.7): distil the article into a structured post +
      a clear, EXPLANATORY title that tells the reader what the article is about.
   2. generate_infographic_assets (temp=0.6): poster label / headline / key points / takeaway.
@@ -123,6 +123,7 @@ def _flip_image_language(lang: str) -> str:
 from bot_personas_store import get_persona
 from pymongo import MongoClient
 from llm_usage_tracker import record_openai_response, record_usage
+import claude_mini
 import boto3
 from botocore.client import Config as BotoConfig
 
@@ -417,8 +418,7 @@ Return ONLY valid JSON:
 }}"""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {
                         "role": "system",
@@ -430,11 +430,11 @@ Return ONLY valid JSON:
                     },
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.7,
-                max_tokens=1200,
+                max_tokens=4096,
+                service="magazine_post.generate",
+                json_mode=True,
             )
-            record_openai_response(response, service="magazine_post.generate")
-            content = response.choices[0].message.content.strip()
+            content = response.strip()
             if content.startswith("```"):
                 content = content.split("```")[1]
                 if content.startswith("json"):
@@ -497,8 +497,7 @@ Return ONLY valid JSON with exactly these keys:
 Keep text short enough to render cleanly on a poster. No quotation marks inside values."""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {
                         "role": "system",
@@ -506,11 +505,11 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
                     },
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.6,
-                max_tokens=400,
+                max_tokens=4096,
+                service="magazine_post.infographic_assets",
+                json_mode=True,
             )
-            record_openai_response(response, service="magazine_post.infographic_assets")
-            content = response.choices[0].message.content.strip()
+            content = response.strip()
             if content.startswith("```"):
                 content = content.split("```")[1]
                 if content.startswith("json"):

@@ -701,6 +701,7 @@ from cover_styles import COVER_STYLE_COLLECTION, get_cover_style, DEFAULT_COVER_
 from bot_personas_store import get_persona
 from pymongo import MongoClient
 from llm_usage_tracker import record_openai_response, record_usage
+import claude_mini
 import boto3
 from botocore.client import Config as BotoConfig
 
@@ -970,16 +971,15 @@ class MagazineArticleGenerator:
                 "अर्थ को अक्षरशः बनाए रखें। केवल सुधारा हुआ पाठ लौटाएँ — कोई टिप्पणी नहीं, कोई code fence नहीं।"
             )
         try:
-            resp = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            resp = claude_mini.chat(
                 messages=[
                     {"role": "system", "content": "You rewrite text into a single target language/script, preserving Markdown and meaning."},
                     {"role": "user", "content": f"{instruction}\n\n---\n{text}"},
                 ],
-                temperature=0.2, max_tokens=2500,
+                max_tokens=16000,
+                service="magazine_article.purify",
             )
-            record_openai_response(resp, service="magazine_article.purify")
-            out = (resp.choices[0].message.content or "").strip()
+            out = (resp or "").strip()
             if out.startswith("```"):
                 parts = out.split("```")
                 out = parts[1] if len(parts) > 1 else out
@@ -1077,8 +1077,7 @@ Return ONLY valid JSON:
 }}"""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {
                         "role": "system",
@@ -1089,11 +1088,11 @@ Return ONLY valid JSON:
                     },
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.7,
-                max_tokens=1800,
+                max_tokens=16000,
+                service="magazine_article.generate",
+                json_mode=True,
             )
-            record_openai_response(response, service="magazine_article.generate")
-            content = response.choices[0].message.content.strip()
+            content = response.strip()
             if content.startswith("```"):
                 content = content.split("```")[1]
                 if content.startswith("json"):
@@ -1159,8 +1158,7 @@ Return ONLY valid JSON with exactly these keys:
 Keep text short enough to render cleanly on a magazine cover. No quotation marks inside values."""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {
                         "role": "system",
@@ -1168,11 +1166,11 @@ Keep text short enough to render cleanly on a magazine cover. No quotation marks
                     },
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.5,
-                max_tokens=200,
+                max_tokens=4096,
+                service="magazine_article.cover_assets",
+                json_mode=True,
             )
-            record_openai_response(response, service="magazine_article.cover_assets")
-            content = response.choices[0].message.content.strip()
+            content = response.strip()
             if content.startswith("```"):
                 content = content.split("```")[1]
                 if content.startswith("json"):
@@ -1295,17 +1293,16 @@ Return ONLY valid JSON:
 }}"""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {"role": "system", "content": "You are a Hindi translator. Translate faithfully preserving Markdown. Return valid JSON."},
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.3,
-                max_tokens=2500,
+                max_tokens=16000,
+                service="magazine_article.hindi_translation",
+                json_mode=True,
             )
-            record_openai_response(response, service="magazine_article.hindi_translation")
-            content = response.choices[0].message.content.strip()
+            content = response.strip()
             if content.startswith("```"):
                 content = content.split("```")[1]
                 if content.startswith("json"):

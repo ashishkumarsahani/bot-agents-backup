@@ -21,6 +21,7 @@ from typing import Optional
 from dotenv import load_dotenv
 
 from llm_usage_tracker import record_openai_response, record_openai_image
+import claude_mini
 from calendarific_service import get_calendarific_service
 from festival_history_manager import get_festival_history_manager
 from firestore_service import get_firestore_service
@@ -191,18 +192,17 @@ Generate JSON:
 Return ONLY JSON."""
 
         try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {"role": "system", "content": "You write beautiful posts about Indian culture, spirituality and wellness."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.8,
-                max_tokens=800
+                max_tokens=4096,
+                service="festival_post.generate",
+                json_mode=True,
             )
-            record_openai_response(response, service="festival_post.generate")
 
-            content = response.choices[0].message.content.strip()
+            content = response.strip()
 
             # Clean JSON
             if content.startswith("```"):

@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 from pymongo import MongoClient
 
 from llm_usage_tracker import record_openai_response
+import claude_mini
 
 load_dotenv()
 
@@ -280,17 +281,15 @@ DO NOT:
 Return ONLY the anecdote text."""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {"role": "system", "content": f"You are {account['name']}, sharing a short traditional story that connects to the post."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.85,
-                max_tokens=200
+                max_tokens=4096,
+                service="engagement.anecdote",
             )
-            record_openai_response(response, service="engagement.anecdote")
-            anecdote = response.choices[0].message.content.strip()
+            anecdote = response.strip()
             anecdote = anecdote.strip('"\'')
             return anecdote
         except Exception as e:
@@ -414,17 +413,15 @@ AVOID:
 Return ONLY the comment text."""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {"role": "system", "content": f"You are {account['name']}, a genuine spiritual seeker and mentor. You comment naturally, sharing insights from your own journey."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.85,
-                max_tokens=200
+                max_tokens=4096,
+                service="engagement.comment",
             )
-            record_openai_response(response, service="engagement.comment")
-            comment = response.choices[0].message.content.strip()
+            comment = response.strip()
             comment = comment.strip('"\'')
             return comment
         except Exception as e:

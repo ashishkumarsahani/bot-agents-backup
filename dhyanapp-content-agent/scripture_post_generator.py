@@ -170,6 +170,7 @@ def _flip_image_language(lang: str) -> str:
 from bot_personas_store import get_persona
 from pymongo import MongoClient
 from llm_usage_tracker import record_openai_response, record_usage
+import claude_mini
 import boto3
 from botocore.client import Config as BotoConfig
 
@@ -414,8 +415,7 @@ class ScripturePostGenerator:
         )
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {
                         "role": "system",
@@ -423,11 +423,10 @@ class ScripturePostGenerator:
                     },
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.1,
-                max_tokens=10,
+                max_tokens=4096,
+                service="scripture_post.classify_type",
             )
-            record_openai_response(response, service="scripture_post.classify_type")
-            result = response.choices[0].message.content.strip().lower()
+            result = response.strip().lower()
             if result in VALID_SCRIPTURE_TYPES:
                 logger.info(f"Scripture type classified: {result}")
                 return result
@@ -548,8 +547,7 @@ Return ONLY valid JSON:
 }}"""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {
                         "role": "system",
@@ -562,11 +560,11 @@ Return ONLY valid JSON:
                     },
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.8,
-                max_tokens=1100,
+                max_tokens=4096,
+                service="scripture_post.generate",
+                json_mode=True,
             )
-            record_openai_response(response, service="scripture_post.generate")
-            content = response.choices[0].message.content.strip()
+            content = response.strip()
             if content.startswith("```"):
                 content = content.split("```")[1]
                 if content.startswith("json"):
@@ -627,8 +625,7 @@ Return ONLY valid JSON with exactly these three keys:
 Keep text short enough to render cleanly on a poster. No quotation marks inside values."""
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = claude_mini.chat(
                 messages=[
                     {
                         "role": "system",
@@ -636,11 +633,11 @@ Keep text short enough to render cleanly on a poster. No quotation marks inside 
                     },
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.6,
-                max_tokens=300,
+                max_tokens=4096,
+                service="scripture_post.infographic_assets",
+                json_mode=True,
             )
-            record_openai_response(response, service="scripture_post.infographic_assets")
-            content = response.choices[0].message.content.strip()
+            content = response.strip()
             if content.startswith("```"):
                 content = content.split("```")[1]
                 if content.startswith("json"):
