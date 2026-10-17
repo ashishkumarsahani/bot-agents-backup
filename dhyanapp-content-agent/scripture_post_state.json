@@ -1,6 +1,6 @@
 {
-  "last_date": "2026-10-14",
-  "last_post_id": "c13874ec-f780-4d81-a5d1-d9135fe52328",
+  "last_date": "2026-10-16",
+  "last_post_id": "72522038-4a4b-40fd-b7c0-cc2058ffce6a",
   "posted_verse_ids": [
     "Patanjali Yoga Sutras_3_22",
     "Valmiki Ramayana_78_25",
@@ -70,7 +70,8 @@
     "Rigveda_7_667",
     "Rigveda_7_458",
     "SrimadBhagavatam_RamakrishnaMath_307_8",
-    "Rigveda_8_170"
+    "Rigveda_8_170",
+    "Rigveda_8_266"
   ],
-  "next_image_language": "hindi"
+  "next_image_language": "english"
 }
